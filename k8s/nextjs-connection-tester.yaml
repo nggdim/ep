@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextjs-docker-app
+  labels:
+    app: nextjs-connection-tester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nextjs-connection-tester
+  template:
+    metadata:
+      labels:
+        app: nextjs-connection-tester
+    spec:
+      containers:
+        - name: web
+          # Replace the value below with the image you push (e.g. ghcr.io/user/connection-tester:1.0.0)
+          image: REPLACE_WITH_YOUR_IMAGE
+          imagePullPolicy: Always
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextjs-docker-app
+  labels:
+    app: nextjs-connection-tester
+spec:
+  type: NodePort
+  selector:
+    app: nextjs-connection-tester
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      nodePort: 32080

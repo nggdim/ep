@@ -1,0 +1,9 @@
+# Prevent unnecessary files from being copied into the Docker build context
+.next
+node_modules
+.git
+.gitignore
+.vscode
+*.log
+README.md
+Dockerfile.dev
