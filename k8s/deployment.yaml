@@ -1,28 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: connection-tester-app
+  name: ep-app
   labels:
-    app: connection-tester
+    app: ep
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: connection-tester
+      app: ep
   template:
     metadata:
       labels:
-        app: connection-tester
+        app: ep
     spec:
       containers:
-        - name: connection-tester
+        - name: ep
           # Replace with your Docker registry image path
           # Examples:
-          #   Docker Hub: yourusername/connection-tester:latest
-          #   Private Registry: registry.example.com/connection-tester:latest
-          #   Google Container Registry: gcr.io/your-project/connection-tester:latest
-          #   Amazon ECR: 123456789.dkr.ecr.region.amazonaws.com/connection-tester:latest
-          image: YOUR_DOCKER_REGISTRY/connection-tester:latest
+          #   Docker Hub: yourusername/ep:latest
+          #   Private Registry: registry.example.com/ep:latest
+          #   Google Container Registry: gcr.io/your-project/ep:latest
+          #   Amazon ECR: 123456789.dkr.ecr.region.amazonaws.com/ep:latest
+          image: pyburn/ep:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

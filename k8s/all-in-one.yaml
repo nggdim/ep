@@ -4,23 +4,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: connection-tester-app
+  name: ep-app
   labels:
-    app: connection-tester
+    app: ep
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: connection-tester
+      app: ep
   template:
     metadata:
       labels:
-        app: connection-tester
+        app: ep
     spec:
       containers:
-        - name: connection-tester
+        - name: ep
           # Replace with your Docker registry image path
-          image: YOUR_DOCKER_REGISTRY/connection-tester:latest
+          image: pyburn/ep:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -49,13 +49,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: connection-tester-service
+  name: ep-service
   labels:
-    app: connection-tester
+    app: ep
 spec:
   type: NodePort
   selector:
-    app: connection-tester
+    app: ep
   ports:
     - name: http
       protocol: TCP
