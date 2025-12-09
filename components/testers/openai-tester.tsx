@@ -52,42 +52,88 @@ export function OpenAiTester({ onResult }: Props) {
 
   const testConnectionClient = async () => {
     const startTime = performance.now()
+    
+    // Build the URL - user provides base like "https://openrouter.ai/api"
+    const apiUrl = `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`
+    
+    // Build request body
+    const requestBody = {
+      model: model.trim(),
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: parseFloat(temperature),
+      max_tokens: parseInt(maxTokens),
+    }
 
     try {
-      // Direct fetch to OpenAI-compatible API from browser
-      // This bypasses AI SDK and gives more control over the request
-      const requestBody = {
-        model: model.trim(),
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: parseFloat(temperature),
-        max_tokens: parseInt(maxTokens),
-      }
-
-      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`, {
+      const response = await fetch(apiUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`,
-          // OpenRouter and some providers require these headers for browser requests
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "Connection Tester",
+          "Content-Type": "application/json",
         },
         body: JSON.stringify(requestBody),
       })
 
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error?.message || data.message || `HTTP ${response.status}: ${response.statusText}`)
-      }
-
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
-      const choice = data.choices?.[0]
+      // Try to parse response as JSON
+      let data: Record<string, unknown>
+      const responseText = await response.text()
+      
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        // Response is not JSON
+        return {
+          type: "openai" as const,
+          connectionString: `${baseUrl} (${model})`,
+          status: "error" as const,
+          message: `Non-JSON response: ${response.status} ${response.statusText}`,
+          responseTime,
+          details: {
+            mode: "client",
+            requestUrl: apiUrl,
+            requestBody,
+            responseStatus: response.status,
+            responseStatusText: response.statusText,
+            responseBody: responseText.slice(0, 2000),
+          },
+        }
+      }
+
+      if (!response.ok) {
+        // Extract error message from various possible formats
+        const errorObj = data.error as Record<string, unknown> | undefined
+        const errorMessage = 
+          errorObj?.message ||
+          data.message ||
+          data.detail ||
+          `HTTP ${response.status}: ${response.statusText}`
+
+        return {
+          type: "openai" as const,
+          connectionString: `${baseUrl} (${model})`,
+          status: "error" as const,
+          message: String(errorMessage),
+          responseTime,
+          details: {
+            mode: "client",
+            requestUrl: apiUrl,
+            requestBody,
+            responseStatus: response.status,
+            responseStatusText: response.statusText,
+            responseBody: data,
+          },
+        }
+      }
+
+      // Success case
+      const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+      const choice = choices?.[0]
       const text = choice?.message?.content || ""
       const finishReason = choice?.finish_reason || "unknown"
 
@@ -98,9 +144,9 @@ export function OpenAiTester({ onResult }: Props) {
         message: "OpenAI API connection successful",
         responseTime,
         details: {
-          model,
-          baseUrl,
           mode: "client",
+          requestUrl: apiUrl,
+          model,
           temperature: parseFloat(temperature),
           maxTokens: parseInt(maxTokens),
           usage: data.usage,
@@ -112,31 +158,23 @@ export function OpenAiTester({ onResult }: Props) {
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
-      let errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
-      
-      // Check for CORS-related errors
-      const isCorsError = error instanceof TypeError && 
-        (errorMessage.includes("Failed to fetch") || 
-         errorMessage.includes("NetworkError") ||
-         errorMessage.includes("Network request failed"))
-      
-      if (isCorsError) {
-        errorMessage = "CORS error: This API doesn't allow direct browser requests. Use Server mode instead."
-      }
+      // Network/fetch errors
+      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+      const errorName = error instanceof Error ? error.name : "Error"
 
       return {
         type: "openai" as const,
         connectionString: `${baseUrl} (${model})`,
         status: "error" as const,
-        message: errorMessage,
+        message: `${errorName}: ${errorMessage}`,
         responseTime,
         details: {
-          model,
-          baseUrl,
           mode: "client",
-          hint: isCorsError 
-            ? "Many API providers (OpenRouter, OpenAI, etc.) block browser requests for security. Server mode proxies the request through your backend, bypassing CORS restrictions."
-            : undefined,
+          requestUrl: apiUrl,
+          requestBody,
+          errorType: errorName,
+          errorMessage,
+          errorStack: error instanceof Error ? error.stack : undefined,
         },
       }
     }
