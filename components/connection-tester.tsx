@@ -5,12 +5,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ApiTester } from "@/components/testers/api-tester"
 import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
+import { OpenApiTester } from "@/components/testers/openapi-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles } from "lucide-react"
 
 export type TestResult = {
   id: string
-  type: "api" | "jdbc" | "odbc"
+  type: "api" | "jdbc" | "odbc" | "openapi"
   connectionString: string
   status: "success" | "error" | "pending"
   message: string
@@ -47,7 +48,7 @@ export function ConnectionTester() {
           </div>
           <h1 className="text-2xl font-semibold text-foreground">Connection Tester</h1>
         </div>
-        <p className="text-muted-foreground">Securely test your API endpoints, JDBC, and ODBC connection strings</p>
+        <p className="text-muted-foreground">Securely test your API endpoints, JDBC, ODBC, and OpenAI-compatible connections</p>
         <div className="flex items-center gap-4 mt-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <Shield className="h-4 w-4 text-primary" />
@@ -92,6 +93,13 @@ export function ConnectionTester() {
                     <Server className="h-4 w-4" />
                     ODBC
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="openapi"
+                    className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground gap-2"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    OpenAI
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -104,6 +112,9 @@ export function ConnectionTester() {
                 </TabsContent>
                 <TabsContent value="odbc" className="mt-0">
                   <OdbcTester onResult={addResult} />
+                </TabsContent>
+                <TabsContent value="openapi" className="mt-0">
+                  <OpenApiTester onResult={addResult} />
                 </TabsContent>
               </div>
             </Tabs>
