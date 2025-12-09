@@ -110,8 +110,8 @@ export function ApiTester({ onResult }: Props) {
   const [headers, setHeaders] = useState<Header[]>([{ key: "", value: "" }])
   const [body, setBody] = useState("")
   const [timeout, setTimeout] = useState("10000")
-  const [mode, setMode] = useState<RequestMode>("client")
-  const [skipSslVerify, setSkipSslVerify] = useState(false)
+  const [mode, setMode] = useState<RequestMode>("server")
+  const [skipSslVerify, setSkipSslVerify] = useState(true)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
@@ -440,14 +440,14 @@ export function ApiTester({ onResult }: Props) {
                   className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                 />
                 <Label htmlFor="skip-ssl-verify-api" className="text-sm text-muted-foreground cursor-pointer">
-                  Skip SSL certificate verification
+                  Skip SSL certificate verification (verify=False)
                 </Label>
               </div>
-              {skipSslVerify && (
-                <p className="text-xs text-amber-500 mt-1">
-                  ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                {skipSslVerify 
+                  ? "✓ SSL verification disabled - equivalent to Python's verify=False. Required for internal endpoints with self-signed certificates."
+                  : "SSL verification enabled - standard HTTPS certificate validation will be performed."}
+              </p>
             </div>
           )}
 
