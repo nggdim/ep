@@ -19,8 +19,8 @@ on:
         type: string
 
 env:
-  # Docker Hub repository name (update this to match your Docker Hub repo)
-  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/connection-tester
+  # Docker Hub repository name
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USER }}/ep
 
 jobs:
   build-and-push:
@@ -41,8 +41,8 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
