@@ -4,7 +4,6 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
@@ -14,36 +13,17 @@ type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
 }
 
-const PRESET_MODELS = [
-  { name: "Llama 3.3 70B", value: "Llama-3.3-70B-Instruct-AWQ" },
-  { name: "DeepSeek R1 Distill 32B", value: "DeepSeek-R1-Distill-Qwen-32B-AWQ" },
-  { name: "Qwen 2.5 72B", value: "Qwen2.5-72B-Instruct-AWQ" },
-  { name: "GPT-3.5 Turbo", value: "gpt-3.5-turbo" },
-  { name: "GPT-4", value: "gpt-4" },
-  { name: "GPT-4 Turbo", value: "gpt-4-turbo" },
-  { name: "Custom", value: "custom" },
-]
-
 export function OpenAiTester({ onResult }: Props) {
   const [baseUrl, setBaseUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [showApiKey, setShowApiKey] = useState(false)
-  const [selectedModel, setSelectedModel] = useState("Llama-3.3-70B-Instruct-AWQ")
-  const [customModel, setCustomModel] = useState("")
+  const [model, setModel] = useState("Llama-3.3-70B-Instruct-AWQ")
   const [systemPrompt, setSystemPrompt] = useState("You are a helpful assistant.")
   const [userPrompt, setUserPrompt] = useState("Say hello in one sentence.")
   const [temperature, setTemperature] = useState("0.1")
   const [maxTokens, setMaxTokens] = useState("100")
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
-  const [streamingResponse, setStreamingResponse] = useState("")
-
-  const getModel = () => {
-    if (selectedModel === "custom") {
-      return customModel || "gpt-3.5-turbo"
-    }
-    return selectedModel
-  }
 
   const validateInputs = (): { valid: boolean; message: string } => {
     if (!baseUrl.trim()) {
@@ -60,8 +40,8 @@ export function OpenAiTester({ onResult }: Props) {
       return { valid: false, message: "API Key is required" }
     }
 
-    if (selectedModel === "custom" && !customModel.trim()) {
-      return { valid: false, message: "Custom model name is required" }
+    if (!model.trim()) {
+      return { valid: false, message: "Model is required" }
     }
 
     return { valid: true, message: "Valid" }
@@ -83,7 +63,6 @@ export function OpenAiTester({ onResult }: Props) {
 
     setTesting(true)
     setResult(null)
-    setStreamingResponse("")
 
     const startTime = performance.now()
 
@@ -96,7 +75,7 @@ export function OpenAiTester({ onResult }: Props) {
         body: JSON.stringify({
           baseUrl: baseUrl.replace(/\/+$/, ""), // Remove trailing slashes
           apiKey,
-          model: getModel(),
+          model: model.trim(),
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
@@ -106,25 +85,10 @@ export function OpenAiTester({ onResult }: Props) {
         }),
       })
 
+      const data = await response.json()
+
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      // Handle streaming response
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-      let fullResponse = ""
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          const chunk = decoder.decode(value, { stream: true })
-          fullResponse += chunk
-          setStreamingResponse(fullResponse)
-        }
+        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`)
       }
 
       const endTime = performance.now()
@@ -132,16 +96,18 @@ export function OpenAiTester({ onResult }: Props) {
 
       const testResult: Omit<TestResult, "id" | "timestamp"> = {
         type: "openai",
-        connectionString: `${baseUrl} (${getModel()})`,
+        connectionString: `${baseUrl} (${model})`,
         status: "success",
-        message: "OpenAI API connection successful - received streaming response",
+        message: "OpenAI API connection successful",
         responseTime,
         details: {
-          model: getModel(),
+          model,
           baseUrl,
           temperature: parseFloat(temperature),
           maxTokens: parseInt(maxTokens),
-          responseBody: fullResponse || streamingResponse,
+          usage: data.usage,
+          finishReason: data.finishReason,
+          responseBody: data.text,
         },
       }
 
@@ -153,12 +119,12 @@ export function OpenAiTester({ onResult }: Props) {
 
       const errorResult: Omit<TestResult, "id" | "timestamp"> = {
         type: "openai",
-        connectionString: `${baseUrl} (${getModel()})`,
+        connectionString: `${baseUrl} (${model})`,
         status: "error",
         message: error instanceof Error ? error.message : "Unknown error occurred",
         responseTime,
         details: {
-          model: getModel(),
+          model,
           baseUrl,
         },
       }
@@ -229,40 +195,22 @@ export function OpenAiTester({ onResult }: Props) {
             </div>
           </div>
 
-          {/* Model Selection */}
+          {/* Model */}
           <div>
             <Label htmlFor="model" className="text-sm text-muted-foreground mb-1.5 block">
               Model
             </Label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger id="model" className="bg-input">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PRESET_MODELS.map((model) => (
-                  <SelectItem key={model.value} value={model.value}>
-                    {model.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Input
+              id="model"
+              placeholder="e.g., Llama-3.3-70B-Instruct-AWQ, gpt-4, etc."
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="bg-input font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              The model name as expected by your API endpoint
+            </p>
           </div>
-
-          {/* Custom Model Input */}
-          {selectedModel === "custom" && (
-            <div>
-              <Label htmlFor="custom-model" className="text-sm text-muted-foreground mb-1.5 block">
-                Custom Model Name
-              </Label>
-              <Input
-                id="custom-model"
-                placeholder="e.g., gpt-4-turbo-preview"
-                value={customModel}
-                onChange={(e) => setCustomModel(e.target.value)}
-                className="bg-input font-mono text-sm"
-              />
-            </div>
-          )}
 
           {/* System Prompt */}
           <div>
@@ -326,17 +274,6 @@ export function OpenAiTester({ onResult }: Props) {
           </div>
         </div>
       </div>
-
-      {/* Streaming Response Preview */}
-      {testing && streamingResponse && (
-        <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
-            <span className="text-sm font-medium text-purple-500">Streaming Response...</span>
-          </div>
-          <pre className="text-sm text-muted-foreground font-mono whitespace-pre-wrap">{streamingResponse}</pre>
-        </div>
-      )}
 
       {/* Test Button */}
       <Button onClick={testConnection} disabled={testing} className="w-full">

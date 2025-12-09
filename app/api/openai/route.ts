@@ -1,5 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai"
-import { streamText } from "ai"
+import { generateText } from "ai"
 
 export async function POST(req: Request) {
   try {
@@ -12,14 +12,21 @@ export async function POST(req: Request) {
       })
     }
 
+    if (!model) {
+      return new Response(JSON.stringify({ error: "Model is required" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
+
     // Create a custom OpenAI-compatible client
     const openai = createOpenAI({
       baseURL: `${baseUrl}/v1`,
       apiKey: apiKey,
     })
 
-    const result = streamText({
-      model: openai(model || "gpt-3.5-turbo"),
+    const result = await generateText({
+      model: openai(model),
       messages: messages || [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: "Say hello in one sentence." },
@@ -28,7 +35,17 @@ export async function POST(req: Request) {
       maxOutputTokens: maxTokens ?? 100,
     })
 
-    return result.toTextStreamResponse()
+    return new Response(
+      JSON.stringify({
+        text: result.text,
+        usage: result.usage,
+        finishReason: result.finishReason,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }
+    )
   } catch (error) {
     console.error("OpenAI API Error:", error)
     return new Response(
