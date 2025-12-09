@@ -52,11 +52,11 @@ export function ModeToggle({ value, onChange, className, disabled }: ModeToggleP
       <p className="text-xs text-muted-foreground">
         {value === "client" ? (
           <>
-            <span className="text-amber-500">⚠️</span> Requests made directly from your browser. API keys visible in dev tools.
+            <span className="text-amber-500">⚠️</span> Requests made directly from browser. May fail due to CORS if the API doesn&apos;t allow browser requests.
           </>
         ) : (
           <>
-            <span className="text-blue-500">ℹ️</span> Requests proxied through the backend. Tests server-side network access.
+            <span className="text-blue-500">ℹ️</span> Requests proxied through backend. Bypasses CORS and tests server-side network access.
           </>
         )}
       </p>

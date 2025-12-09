@@ -110,16 +110,31 @@ export function OpenAiTester({ onResult }: Props) {
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
+      let errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+      
+      // Check for CORS-related errors
+      const isCorsError = error instanceof TypeError && 
+        (errorMessage.includes("Failed to fetch") || 
+         errorMessage.includes("NetworkError") ||
+         errorMessage.includes("Network request failed"))
+      
+      if (isCorsError) {
+        errorMessage = "CORS error: This API doesn't allow direct browser requests. Use Server mode instead."
+      }
+
       return {
         type: "openai" as const,
         connectionString: `${baseUrl} (${model})`,
         status: "error" as const,
-        message: error instanceof Error ? error.message : "Unknown error occurred",
+        message: errorMessage,
         responseTime,
         details: {
           model,
           baseUrl,
           mode: "client",
+          hint: isCorsError 
+            ? "Many API providers (OpenRouter, OpenAI, etc.) block browser requests for security. Server mode proxies the request through your backend, bypassing CORS restrictions."
+            : undefined,
         },
       }
     }
