@@ -1,5 +1,15 @@
 import { Agent, fetch as undiciFetch } from "undici"
 
+interface OpenAIResponse {
+  choices?: Array<{
+    message?: { content?: string }
+    finish_reason?: string
+  }>
+  usage?: unknown
+  error?: { message?: string }
+  message?: string
+}
+
 export async function POST(req: Request) {
   try {
     const { baseUrl, apiKey, model, messages, temperature, maxTokens, skipSslVerify } = await req.json()
@@ -61,7 +71,20 @@ export async function POST(req: Request) {
       })
     }
 
-    const data = await response.json()
+    // Read response as text first to handle non-JSON responses
+    const responseText = await response.text()
+    
+    // Try to parse as JSON
+    let data: OpenAIResponse
+    try {
+      data = JSON.parse(responseText) as OpenAIResponse
+    } catch {
+      // Response is not valid JSON - likely an error page from a gateway/proxy
+      const preview = responseText.slice(0, 200).replace(/\s+/g, ' ').trim()
+      throw new Error(
+        `Non-JSON response from ${apiUrl} (HTTP ${response.status}): "${preview}"${responseText.length > 200 ? '...' : ''}`
+      )
+    }
 
     if (!response.ok) {
       const errorMessage = data.error?.message || data.message || `HTTP ${response.status}`
