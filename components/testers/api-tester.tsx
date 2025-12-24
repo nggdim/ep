@@ -486,20 +486,23 @@ export function ApiTester({ onResult }: Props) {
           </div>
 
           {/* Body */}
-          {method !== "GET" && method !== "HEAD" && (
-            <div>
-              <Label htmlFor="body" className="text-sm text-muted-foreground mb-1.5 block">
-                Request Body
-              </Label>
-              <Textarea
-                id="body"
-                placeholder='{"key": "value"}'
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                className="bg-input font-mono text-sm min-h-[100px]"
-              />
-            </div>
-          )}
+          <div>
+            <Label htmlFor="body" className="text-sm text-muted-foreground mb-1.5 block">
+              Request Body
+            </Label>
+            <Textarea
+              id="body"
+              placeholder='{"key": "value"}'
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              className="bg-input font-mono text-sm min-h-[100px]"
+            />
+            {(method === "GET" || method === "HEAD") && body.trim() && (
+              <p className="text-xs text-amber-500 mt-1">
+                ⚠️ Note: Request body is typically ignored for {method} requests by most servers.
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
