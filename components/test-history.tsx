@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CheckCircle2, XCircle, Trash2, History, Globe, Database, Server, Sparkles } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { cn } from "@/lib/utils"
 
 type Props = {
   history: TestResult[]
   onClear: () => void
+  compact?: boolean
 }
 
 const typeIcons = {
@@ -18,7 +20,43 @@ const typeIcons = {
   openai: Sparkles,
 }
 
-export function TestHistory({ history, onClear }: Props) {
+export function TestHistory({ history, onClear, compact = false }: Props) {
+  if (compact) {
+    return (
+      <div className="px-3 pb-3">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-muted-foreground">Recent tests</span>
+          <Button variant="ghost" size="sm" onClick={onClear} className="h-6 text-xs px-2">
+            <Trash2 className="h-3 w-3 mr-1" />
+            Clear
+          </Button>
+        </div>
+        <div className="space-y-1">
+          {history.slice(0, 5).map((result) => {
+            const Icon = typeIcons[result.type]
+            return (
+              <div key={result.id} className="flex items-center gap-2 p-2 rounded-md bg-accent/30 text-xs">
+                {result.status === "success" ? (
+                  <CheckCircle2 className="h-3 w-3 text-success shrink-0" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-destructive shrink-0" />
+                )}
+                <Icon className="h-3 w-3 text-muted-foreground shrink-0" />
+                <span className="font-mono truncate flex-1">
+                  {result.connectionString.slice(0, 30)}
+                  {result.connectionString.length > 30 ? "..." : ""}
+                </span>
+                {result.responseTime && (
+                  <span className="text-muted-foreground shrink-0">{result.responseTime}ms</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-lg border border-border bg-card h-fit">
       <div className="flex items-center justify-between p-4 border-b border-border">

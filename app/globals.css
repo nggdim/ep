@@ -136,3 +136,87 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Minimal sleek scrollbar */
+.scrollbar-minimal {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-minimal:hover {
+  scrollbar-color: var(--primary) transparent;
+}
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+.scrollbar-minimal::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-minimal::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+}
+
+.scrollbar-minimal::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.scrollbar-minimal:hover::-webkit-scrollbar-thumb {
+  background: var(--primary);
+}
+
+.scrollbar-minimal::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+.scrollbar-minimal::-webkit-scrollbar-thumb:active {
+  background: var(--primary);
+}
+
+/* Always visible but subtle variant */
+.scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.3 0.01 285) transparent;
+}
+
+.scrollbar-subtle:hover {
+  scrollbar-color: var(--primary) transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 2px;
+  margin: 4px 0;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  background: oklch(0.3 0.01 285);
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+
+.scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0.05 145);
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
