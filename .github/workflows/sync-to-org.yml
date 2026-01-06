@@ -8,6 +8,8 @@ on:
 
 jobs:
   sync:
+    # Only run this job in YOUR personal repo, not in the org mirror
+    if: github.repository == 'pybern/ep'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
