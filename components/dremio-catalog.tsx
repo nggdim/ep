@@ -607,6 +607,7 @@ export function DremioCatalog({
 
   /**
    * Handle toggling selection of a catalog item
+   * When selecting a container, recursively selects all children (datasets and nested containers)
    */
   const handleToggleSelection = useCallback(async (item: CatalogItem) => {
     if (!onSelectionChange || !credentials) return
@@ -614,9 +615,22 @@ export function DremioCatalog({
     const itemPath = item.path.join(".")
     const isCurrentlySelected = selectedItemsMap.has(itemPath)
 
+    console.log(`[Catalog] Toggle selection: "${itemPath}" (${item.type}${item.containerType ? '/' + item.containerType : ''})`, {
+      currentlySelected: isCurrentlySelected,
+      action: isCurrentlySelected ? 'DESELECT' : 'SELECT'
+    })
+
     if (isCurrentlySelected) {
-      // Remove from selection
-      const newItems = selectedItems.filter(i => i.path !== itemPath)
+      // Remove from selection - also remove all descendants
+      const newItems = selectedItems.filter(i => {
+        // Remove the item itself
+        if (i.path === itemPath) return false
+        // Remove any descendants (items whose path starts with this item's path)
+        if (i.path.startsWith(itemPath + ".")) return false
+        return true
+      })
+      const removedCount = selectedItems.length - newItems.length
+      console.log(`[Catalog] Deselected "${itemPath}" and ${removedCount - 1} descendants. Remaining: ${newItems.length} items`)
       onSelectionChange(newItems)
     } else {
       // Add to selection
@@ -638,11 +652,13 @@ export function DremioCatalog({
       }
 
       // Add to selection immediately
-      const newItems = [...selectedItems, newItem]
+      let newItems = [...selectedItems, newItem]
+      console.log(`[Catalog] Added "${itemPath}" to selection. Total: ${newItems.length} items`)
       onSelectionChange(newItems)
 
       // If it's a dataset, load its columns
       if (isDataset) {
+        console.log(`[Catalog] Loading columns for dataset: "${itemPath}"...`)
         try {
           const response = await fetch("/api/dremio/catalog", {
             method: "POST",
@@ -663,6 +679,8 @@ export function DremioCatalog({
               type: formatColumnType(field.type)
             }))
 
+            console.log(`[Catalog] ✓ Loaded ${columns.length} columns for "${itemPath}":`, columns.map(c => c.name))
+
             // Update the selection with loaded columns
             const updatedItems = newItems.map(i => 
               i.path === itemPath 
@@ -671,6 +689,7 @@ export function DremioCatalog({
             )
             onSelectionChange(updatedItems)
           } else {
+            console.log(`[Catalog] ⚠ No columns found for "${itemPath}"`)
             // Mark as loaded even if no columns found
             const updatedItems = newItems.map(i => 
               i.path === itemPath 
@@ -690,20 +709,28 @@ export function DremioCatalog({
         }
       }
 
-      // If it's a container, load its child datasets recursively
+      // If it's a container, recursively select all children
       if (isContainer) {
-        await loadContainerDatasets(item, newItems, onSelectionChange, credentials)
+        console.log(`[Catalog] Recursively selecting children of container: "${itemPath}"...`)
+        newItems = await selectContainerAndChildren(item, newItems, onSelectionChange, credentials)
+        console.log(`[Catalog] ✓ Finished selecting children. Total selected: ${newItems.length} items`)
       }
     }
   }, [credentials, selectedItems, selectedItemsMap, onSelectionChange])
 
-  // Helper to recursively load all datasets within a container
-  async function loadContainerDatasets(
+  /**
+   * Helper to recursively select all children within a container.
+   * Adds each child (dataset or nested container) as a separate selected item.
+   */
+  async function selectContainerAndChildren(
     container: CatalogItem,
     currentItems: SelectedCatalogItem[],
     onSelectionChange: (items: SelectedCatalogItem[]) => void,
     credentials: DremioCredentials
-  ) {
+  ): Promise<SelectedCatalogItem[]> {
+    const containerPath = container.path.join(".")
+    console.log(`[Catalog] Fetching children for container: "${containerPath}"...`)
+    
     try {
       const response = await fetch("/api/dremio/catalog", {
         method: "POST",
@@ -717,14 +744,38 @@ export function DremioCatalog({
       })
 
       const data = await response.json()
-      const containerPath = container.path.join(".")
 
       if (response.ok && data.children) {
+        const datasets = data.children.filter((c: { type: string }) => c.type === "DATASET")
+        const containers = data.children.filter((c: { type: string }) => c.type === "CONTAINER")
+        console.log(`[Catalog] Found ${data.children.length} children in "${containerPath}": ${datasets.length} datasets, ${containers.length} containers`)
+        
+        let updatedItems = [...currentItems]
         const childDatasets: { path: string; columns: SelectedColumn[] }[] = []
         
         // Process children
         for (const child of data.children) {
+          const childPath = (child.path as string[]).join(".")
+          
+          // Skip if already selected
+          if (updatedItems.some(i => i.path === childPath)) continue
+
           if (child.type === "DATASET") {
+            // Create a selected item for this dataset
+            const datasetItem: SelectedCatalogItem = {
+              id: child.id,
+              path: childPath,
+              type: "DATASET",
+              datasetType: child.datasetType,
+              columns: [],
+              columnsLoaded: false,
+              columnsLoading: true,
+            }
+            
+            console.log(`[Catalog]   + Adding child dataset: "${childPath}"`)
+            updatedItems = [...updatedItems, datasetItem]
+            onSelectionChange(updatedItems)
+
             // Fetch columns for this dataset
             try {
               const childResponse = await fetch("/api/dremio/catalog", {
@@ -744,21 +795,61 @@ export function DremioCatalog({
                 type: formatColumnType(field.type)
               }))
 
-              childDatasets.push({
-                path: (child.path as string[]).join("."),
-                columns
-              })
+              console.log(`[Catalog]     ✓ Loaded ${columns.length} columns for "${childPath}"`)
+
+              // Update the dataset with loaded columns
+              updatedItems = updatedItems.map(i => 
+                i.path === childPath 
+                  ? { ...i, columns, columnsLoaded: true, columnsLoading: false }
+                  : i
+              )
+              onSelectionChange(updatedItems)
+
+              childDatasets.push({ path: childPath, columns })
             } catch {
-              childDatasets.push({
-                path: (child.path as string[]).join("."),
-                columns: []
-              })
+              updatedItems = updatedItems.map(i => 
+                i.path === childPath 
+                  ? { ...i, columnsLoaded: true, columnsLoading: false }
+                  : i
+              )
+              onSelectionChange(updatedItems)
+              childDatasets.push({ path: childPath, columns: [] })
             }
+          } else if (child.type === "CONTAINER") {
+            // Create a selected item for this nested container
+            const nestedContainerItem: SelectedCatalogItem = {
+              id: child.id,
+              path: childPath,
+              type: "CONTAINER",
+              containerType: child.containerType,
+              columns: [],
+              columnsLoaded: true,
+              childDatasets: [],
+              childDatasetsLoaded: false,
+              childDatasetsLoading: true,
+            }
+            
+            console.log(`[Catalog]   + Adding nested container: "${childPath}" (${child.containerType})`)
+            updatedItems = [...updatedItems, nestedContainerItem]
+            onSelectionChange(updatedItems)
+
+            // Recursively select children of this nested container
+            const childItem: CatalogItem = {
+              id: child.id,
+              path: child.path,
+              type: "CONTAINER",
+              containerType: child.containerType,
+              children: [],
+              isLoaded: false,
+              isLoading: false,
+            }
+            
+            updatedItems = await selectContainerAndChildren(childItem, updatedItems, onSelectionChange, credentials)
           }
         }
 
-        // Update the container with its child datasets
-        const updatedItems = currentItems.map(i => 
+        // Update the parent container with its child datasets summary and mark as loaded
+        updatedItems = updatedItems.map(i => 
           i.path === containerPath 
             ? { 
                 ...i, 
@@ -769,6 +860,8 @@ export function DremioCatalog({
             : i
         )
         onSelectionChange(updatedItems)
+        
+        return updatedItems
       } else {
         // Mark as loaded even if no children found
         const updatedItems = currentItems.map(i => 
@@ -777,16 +870,17 @@ export function DremioCatalog({
             : i
         )
         onSelectionChange(updatedItems)
+        return updatedItems
       }
     } catch (err) {
       console.error("Failed to load container datasets:", err)
-      const containerPath = container.path.join(".")
       const updatedItems = currentItems.map(i => 
         i.path === containerPath 
           ? { ...i, childDatasetsLoaded: true, childDatasetsLoading: false }
           : i
       )
       onSelectionChange(updatedItems)
+      return updatedItems
     }
   }
 
