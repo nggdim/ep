@@ -160,10 +160,17 @@ export async function POST(req: Request) {
     const systemPrompt = buildSystemPrompt(dataContext as DataContext | undefined)
     
     // Log context info for debugging
-    if (dataContext) {
-      const tableCount = dataContext.tables?.length || 0
-      const containerCount = dataContext.containers?.length || 0
-      console.log(`[Chat API] Context: ${tableCount} tables, ${containerCount} containers`)
+    const tableCount = dataContext?.tables?.length || 0
+    const containerCount = dataContext?.containers?.length || 0
+    const totalColumns = (dataContext?.tables || []).reduce((sum: number, t: TableContext) => sum + t.columns.length, 0) +
+      (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
+        sum + (c.childDatasets || []).reduce((s: number, d: { columns: ColumnInfo[] }) => s + d.columns.length, 0), 0)
+    
+    console.log(`[Chat API] Data context received: ${tableCount} tables, ${containerCount} containers, ${totalColumns} total columns`)
+    
+    if (tableCount > 0 || containerCount > 0) {
+      console.log(`[Chat API] Tables: ${dataContext?.tables?.map((t: TableContext) => t.path).join(', ') || 'none'}`)
+      console.log(`[Chat API] Containers: ${dataContext?.containers?.map((c: ContainerContext) => c.path).join(', ') || 'none'}`)
     }
     
     // Prepend system message

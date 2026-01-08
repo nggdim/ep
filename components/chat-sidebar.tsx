@@ -83,7 +83,10 @@ export function ChatSidebar({
 
   // Build data context from selected catalog items
   const dataContext = useMemo(() => {
-    if (selectedCatalogItems.length === 0) return undefined
+    if (selectedCatalogItems.length === 0) {
+      console.log("[ChatSidebar] No catalog items selected, dataContext is undefined")
+      return undefined
+    }
 
     const tables: { path: string; columns: { name: string; type: string }[] }[] = []
     const containers: { path: string; type: string; childDatasets: { path: string; columns: { name: string; type: string }[] }[] }[] = []
@@ -106,6 +109,11 @@ export function ChatSidebar({
       }
     }
 
+    const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
+      containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
+    
+    console.log(`[ChatSidebar] Data context built: ${tables.length} tables, ${containers.length} containers, ${totalCols} total columns`)
+    
     return { tables, containers }
   }, [selectedCatalogItems])
 
@@ -531,13 +539,24 @@ export function ChatSidebar({
 
           {/* Input Area */}
           <div className="border-t border-border/50 p-3 shrink-0">
+            {/* Context indicator */}
+            {selectedCatalogItems.length > 0 && (
+              <div className="flex items-center gap-1.5 mb-2 px-1">
+                <Database className="h-3 w-3 text-primary" />
+                <span className="text-[10px] text-primary">
+                  {totalTables + totalContainers} item{totalTables + totalContainers !== 1 ? 's' : ''} • {totalColumns} columns in context
+                </span>
+              </div>
+            )}
             <div className="flex gap-2">
               <Textarea
                 ref={textareaRef}
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about your data..."
+                placeholder={selectedCatalogItems.length > 0 
+                  ? "Ask about your selected tables..." 
+                  : "Ask about your data..."}
                 className="min-h-[40px] max-h-[200px] resize-none text-sm"
                 disabled={isChatLoading}
               />
@@ -560,7 +579,9 @@ export function ChatSidebar({
                     disabled={!input.trim()}
                     onClick={handleSend}
                     className="h-10 w-10 shrink-0"
-                    title="Send message"
+                    title={selectedCatalogItems.length > 0 
+                      ? `Send with ${selectedCatalogItems.length} item(s) context` 
+                      : "Send message"}
                   >
                     <Send className="h-4 w-4" />
                   </Button>
