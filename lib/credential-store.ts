@@ -85,6 +85,10 @@ export function saveOpenAICredentials(credentials: OpenAICredentials): void {
     ...stored,
     openai: credentials
   })
+  // Dispatch custom event for same-tab updates
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("openai-credentials-updated"))
+  }
 }
 
 export function getOpenAICredentials(): OpenAICredentials | null {
