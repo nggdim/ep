@@ -6,7 +6,8 @@ import { TextStreamChatTransport } from "ai"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { getOpenAICredentials, OpenAICredentials } from "@/lib/credential-store"
+import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
+import { DataContextSelector, DataContext } from "@/components/data-context-selector"
 import { cn } from "@/lib/utils"
 import {
   MessageSquare,
@@ -26,12 +27,14 @@ interface ChatSidebarProps {
   isOpen: boolean
   onToggle: () => void
   onOpenSettings?: () => void
+  dremioCredentials?: DremioCredentials | null
 }
 
-export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarProps) {
+export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredentials }: ChatSidebarProps) {
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
+  const [dataContext, setDataContext] = useState<DataContext>({ tables: [] })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -66,30 +69,43 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     }
   }, [])
 
-  // Create a unique ID for the chat based on credentials to force re-initialization
+  // Create a unique ID for the chat based on credentials
+  // Note: We don't include dataContext here as we want to preserve chat history when context changes
   const chatId = useMemo(() => {
     if (!credentials) return "chat-unconfigured"
     return `chat-${credentials.baseUrl}-${credentials.model}`
   }, [credentials])
 
-  // Create the transport with credentials in the body
+  // Create the transport with credentials and data context in the body
   const transport = useMemo(() => {
     if (!credentials) {
       return undefined
     }
+    
+    // Format the data context for the API
+    const schemaContext = dataContext.tables.length > 0 ? {
+      tables: dataContext.tables.map(table => ({
+        path: table.path,
+        columns: table.columns.map(col => ({
+          name: col.name,
+          type: col.type
+        }))
+      }))
+    } : undefined
     
     const bodyParams = {
       baseUrl: credentials.baseUrl,
       apiKey: credentials.apiKey,
       model: credentials.model,
       skipSslVerify: credentials.sslVerify === false,
+      dataContext: schemaContext,
     }
     
     return new TextStreamChatTransport({
       api: "/api/chat",
       body: bodyParams,
     })
-  }, [credentials])
+  }, [credentials, dataContext])
 
   const {
     messages,
@@ -224,6 +240,18 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
           </div>
         )}
       </div>
+
+      {/* Data Context Selector - Always visible when Dremio is configured */}
+      {dremioCredentials && (
+        <div className="border-b border-border/50 shrink-0">
+          <DataContextSelector
+            credentials={dremioCredentials}
+            context={dataContext}
+            onContextChange={setDataContext}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
+      )}
 
       {/* Content Area */}
       {isCredentialsLoading ? (
