@@ -142,6 +142,7 @@ export default function Page() {
         isOpen={chatSidebarOpen}
         onToggle={handleToggleChatSidebar}
         onOpenSettings={handleOpenSettings}
+        dremioCredentials={credentials}
       />
 
       {/* Floating Widget */}

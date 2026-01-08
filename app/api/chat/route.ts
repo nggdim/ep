@@ -1,5 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { streamText, convertToModelMessages, type UIMessage } from "ai"
+import { streamText, convertToModelMessages, type UIMessage, type ModelMessage } from "ai"
 import { Agent, fetch as undiciFetch } from "undici"
 
 export const runtime = "nodejs"
@@ -12,10 +12,73 @@ const insecureAgent = new Agent({
   },
 })
 
+interface TableContext {
+  path: string
+  columns: { name: string; type: string }[]
+}
+
+interface DataContext {
+  tables: TableContext[]
+}
+
+/**
+ * Build a system prompt for the SQL assistant with schema context
+ */
+function buildSystemPrompt(dataContext?: DataContext): string {
+  const basePrompt = `You are an expert SQL assistant specialized in helping users discover data and build queries. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
+
+Your capabilities include:
+- Writing efficient SQL queries (SELECT, JOIN, GROUP BY, window functions, CTEs, etc.)
+- Explaining query logic and suggesting optimizations
+- Helping users understand their data schema and relationships
+- Suggesting analytical approaches and data exploration strategies
+- Debugging SQL errors and providing fixes
+
+Guidelines:
+- Always use proper SQL formatting with clear indentation
+- Prefer explicit JOINs over implicit ones
+- Use meaningful aliases for tables and columns
+- Add comments for complex query logic when helpful
+- Consider performance implications and suggest optimizations when relevant
+- When referencing tables, use the full qualified path (e.g., source.schema.table)`
+
+  if (!dataContext || dataContext.tables.length === 0) {
+    return basePrompt + `
+
+Note: No specific data context has been provided. Ask the user about their data schema if you need more information to help them.`
+  }
+
+  // Build schema context from selected tables
+  let schemaContext = `
+
+## Available Data Schema
+
+The user has selected the following tables for context:
+
+`
+
+  for (const table of dataContext.tables) {
+    schemaContext += `### Table: \`${table.path}\`\n`
+    if (table.columns.length > 0) {
+      schemaContext += `| Column | Type |\n|--------|------|\n`
+      for (const col of table.columns) {
+        schemaContext += `| ${col.name} | ${col.type} |\n`
+      }
+    } else {
+      schemaContext += `(Column information not available)\n`
+    }
+    schemaContext += `\n`
+  }
+
+  schemaContext += `Use this schema information to help the user write accurate queries and explore their data. Reference these exact table and column names when generating SQL.`
+
+  return basePrompt + schemaContext
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify } = body
+    const { messages, baseUrl, apiKey, model, skipSslVerify, dataContext } = body
 
     if (!baseUrl || !apiKey || !model) {
       return new Response(
@@ -33,6 +96,15 @@ export async function POST(req: Request) {
     
     // Convert messages from UI format (with parts) to model format (with content)
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
+    
+    // Build the system prompt with data context
+    const systemPrompt = buildSystemPrompt(dataContext as DataContext | undefined)
+    
+    // Prepend system message
+    const messagesWithSystem: ModelMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...modelMessages
+    ]
 
     // Normalize base URL - ensure it ends with /v1
     let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "")
@@ -80,10 +152,10 @@ export async function POST(req: Request) {
       fetch: customFetch,
     })
 
-    // Stream the response using the converted model messages
+    // Stream the response using the messages with system prompt
     const result = streamText({
       model: provider(model),
-      messages: modelMessages,
+      messages: messagesWithSystem,
       temperature: 0.7,
     })
 
