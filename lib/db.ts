@@ -75,14 +75,39 @@ class WorkspaceDatabase extends Dexie {
   }
 }
 
-// Singleton database instance
-export const db = new WorkspaceDatabase()
+// Singleton database instance - lazy initialized to avoid SSR issues
+let _db: WorkspaceDatabase | null = null
+
+function getDb(): WorkspaceDatabase {
+  if (typeof window === 'undefined') {
+    throw new Error('Database can only be accessed on the client side')
+  }
+  if (!_db) {
+    _db = new WorkspaceDatabase()
+  }
+  return _db
+}
+
+// Proxy to lazily access the database
+export const db = new Proxy({} as WorkspaceDatabase, {
+  get(_, prop) {
+    return getDb()[prop as keyof WorkspaceDatabase]
+  }
+})
 
 /**
  * Generate a UUID v4
  */
 export function generateId(): string {
-  return crypto.randomUUID()
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  // Fallback for environments without crypto.randomUUID
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0
+    const v = c === 'x' ? r : (r & 0x3 | 0x8)
+    return v.toString(16)
+  })
 }
 
 /**
