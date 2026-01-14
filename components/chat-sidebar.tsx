@@ -9,9 +9,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
 import { SelectedCatalogItem } from "@/components/dremio-catalog"
-import { getLinkedTablesWithNotes, db, Workspace, createWorkspace } from "@/lib/db"
-import { useWorkspaces, useActiveWorkspace } from "@/lib/use-workspace"
-import { Input } from "@/components/ui/input"
+import { WorkspaceDropdown } from "@/components/workspace-dropdown"
+import { getLinkedTablesWithNotes, db } from "@/lib/db"
+import { useActiveWorkspace } from "@/lib/use-workspace"
 import { cn } from "@/lib/utils"
 import {
   MessageSquare,
@@ -35,10 +35,6 @@ import {
   Columns2,
   Square,
   RectangleHorizontal,
-  FolderOpen,
-  Plus,
-  Pencil,
-  StickyNote,
 } from "lucide-react"
 
 // Constants for resize constraints
@@ -220,12 +216,8 @@ export function ChatSidebar({
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   
-  // Workspace state
-  const { workspaces, isLoading: workspacesLoading, create: createWs } = useWorkspaces()
-  const { activeWorkspaceId, activeWorkspace, setActive: setActiveWorkspace, isLoaded: workspaceLoaded } = useActiveWorkspace()
-  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
-  const [newWorkspaceName, setNewWorkspaceName] = useState("")
-  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false)
+  // Workspace state - just track active workspace for data context
+  const { activeWorkspaceId, activeWorkspace, isLoaded: workspaceLoaded } = useActiveWorkspace()
   
   // Notify parent when workspace changes
   useEffect(() => {
@@ -677,125 +669,17 @@ export function ChatSidebar({
 
       {/* Workspace Selector */}
       <div className="border-b border-border/50 px-3 py-2 shrink-0">
-        <div className="flex items-center gap-2 mb-2">
-          <FolderOpen className="h-3.5 w-3.5 text-amber-500" />
-          <span className="text-xs font-medium">Workspace</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">Workspace</span>
+          <WorkspaceDropdown 
+            variant="compact" 
+            onWorkspaceChange={onWorkspaceChange}
+          />
         </div>
-        
-        {workspacesLoading ? (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Loading...
-          </div>
-        ) : showCreateWorkspace ? (
-          <div className="space-y-2">
-            <Input
-              placeholder="Workspace name..."
-              value={newWorkspaceName}
-              onChange={(e) => setNewWorkspaceName(e.target.value)}
-              className="h-7 text-xs"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && newWorkspaceName.trim()) {
-                  setIsCreatingWorkspace(true)
-                  createWs(newWorkspaceName.trim()).then((ws) => {
-                    setActiveWorkspace(ws.id)
-                    setNewWorkspaceName("")
-                    setShowCreateWorkspace(false)
-                    setIsCreatingWorkspace(false)
-                  })
-                } else if (e.key === "Escape") {
-                  setShowCreateWorkspace(false)
-                  setNewWorkspaceName("")
-                }
-              }}
-            />
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                className="h-6 text-xs flex-1"
-                disabled={!newWorkspaceName.trim() || isCreatingWorkspace}
-                onClick={() => {
-                  setIsCreatingWorkspace(true)
-                  createWs(newWorkspaceName.trim()).then((ws) => {
-                    setActiveWorkspace(ws.id)
-                    setNewWorkspaceName("")
-                    setShowCreateWorkspace(false)
-                    setIsCreatingWorkspace(false)
-                  })
-                }}
-              >
-                {isCreatingWorkspace ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  "Create"
-                )}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 text-xs"
-                onClick={() => {
-                  setShowCreateWorkspace(false)
-                  setNewWorkspaceName("")
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {/* All option */}
-            <button
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors",
-                !activeWorkspaceId 
-                  ? "bg-primary/10 text-primary" 
-                  : "hover:bg-accent/50 text-muted-foreground"
-              )}
-              onClick={() => setActiveWorkspace(null)}
-            >
-              <Database className="h-3 w-3" />
-              <span className="flex-1 text-left">All (no workspace)</span>
-              {!activeWorkspaceId && <Check className="h-3 w-3" />}
-            </button>
-            
-            {/* Workspace list */}
-            {workspaces.map((ws) => (
-              <button
-                key={ws.id}
-                className={cn(
-                  "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors",
-                  activeWorkspaceId === ws.id 
-                    ? "bg-primary/10 text-primary" 
-                    : "hover:bg-accent/50 text-foreground"
-                )}
-                onClick={() => setActiveWorkspace(ws.id)}
-              >
-                <StickyNote className="h-3 w-3" />
-                <span className="flex-1 text-left truncate">{ws.name}</span>
-                {activeWorkspaceId === ws.id && <Check className="h-3 w-3" />}
-              </button>
-            ))}
-            
-            {/* New workspace button */}
-            <button
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/50 text-primary transition-colors"
-              onClick={() => setShowCreateWorkspace(true)}
-            >
-              <Plus className="h-3 w-3" />
-              <span>New workspace</span>
-            </button>
-          </div>
-        )}
-        
-        {activeWorkspace && (
-          <div className="mt-2 pt-2 border-t border-border/30">
-            <p className="text-[10px] text-muted-foreground truncate" title={activeWorkspace.description || "No description"}>
-              {activeWorkspace.description || "No description"}
-            </p>
-          </div>
+        {activeWorkspace?.description && (
+          <p className="text-[10px] text-muted-foreground mt-1 truncate" title={activeWorkspace.description}>
+            {activeWorkspace.description}
+          </p>
         )}
       </div>
 

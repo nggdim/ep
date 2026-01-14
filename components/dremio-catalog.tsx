@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
 import { useLinkedTables } from "@/lib/use-workspace"
 import { TableNotesModal } from "@/components/table-notes-modal"
+import { WorkspaceDropdown } from "@/components/workspace-dropdown"
 
 interface DremioCatalogProps {
   credentials: DremioCredentials | null
@@ -68,6 +69,10 @@ interface DremioCatalogProps {
   viewModeControls?: React.ReactNode
   /** Active workspace ID for notes */
   activeWorkspaceId?: string | null
+  /** Callback when workspace changes */
+  onWorkspaceChange?: (workspaceId: string | null) => void
+  /** Show workspace dropdown in header (default true) */
+  showWorkspaceDropdown?: boolean
 }
 
 /**
@@ -558,6 +563,8 @@ export function DremioCatalog({
   onSelectionChange,
   viewModeControls,
   activeWorkspaceId,
+  onWorkspaceChange,
+  showWorkspaceDropdown = true,
 }: DremioCatalogProps) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -1089,6 +1096,13 @@ export function DremioCatalog({
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          {/* Workspace selector */}
+          {showWorkspaceDropdown && (
+            <WorkspaceDropdown 
+              variant="compact" 
+              onWorkspaceChange={onWorkspaceChange}
+            />
+          )}
           {viewModeControls}
           {/* Show linked only filter - only when workspace is selected */}
           {activeWorkspaceId && (

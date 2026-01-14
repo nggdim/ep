@@ -5,8 +5,9 @@ import { FloatingWidget } from "@/components/floating-widget"
 import { SqlEditor } from "@/components/sql-editor"
 import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
+import { useRouter } from "next/navigation"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal } from "lucide-react"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
@@ -25,6 +26,7 @@ const CATALOG_MAX_WIDTH = 500
 const CATALOG_DEFAULT_WIDTH = 280
 
 export default function Page() {
+  const router = useRouter()
   const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
@@ -136,6 +138,7 @@ export default function Page() {
               selectedItems={selectedCatalogItems}
               onSelectionChange={handleSelectionChange}
               activeWorkspaceId={activeWorkspaceId}
+              onWorkspaceChange={setActiveWorkspaceId}
               viewModeControls={
                 <div className="flex items-center gap-0.5 bg-accent/30 rounded-md p-0.5">
                   {(Object.entries(CATALOG_VIEW_MODES) as [CatalogViewMode, typeof CATALOG_VIEW_MODES[CatalogViewMode]][]).map(([mode, config]) => {
@@ -209,6 +212,18 @@ export default function Page() {
           </div>
 
           <div className="flex-1" />
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => router.push("/workspaces")}
+          >
+            <FolderOpen className="h-3 w-3" />
+            Workspaces
+          </Button>
+
+          <div className="h-4 w-px bg-border/50" />
 
           {credentials ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
