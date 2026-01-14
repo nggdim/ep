@@ -105,6 +105,9 @@ export default function WorkspacesPage() {
     loadWorkspace()
   }, [selectedWorkspaceId])
 
+  // Create a stable key for linkedTables to avoid infinite loops
+  const linkedTablesKey = linkedTables.map(lt => lt.id).join(',')
+  
   // Load linked tables with their notes
   useEffect(() => {
     const loadLinkedTablesWithNotes = async () => {
@@ -131,7 +134,8 @@ export default function WorkspacesPage() {
       }
     }
     loadLinkedTablesWithNotes()
-  }, [selectedWorkspaceId, linkedTables])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWorkspaceId, linkedTablesKey])
 
   // Handlers
   const handleCreateWorkspace = async () => {
