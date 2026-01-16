@@ -593,6 +593,7 @@ export default function WorkspacesPage() {
         workspaceId={selectedWorkspaceId}
         tablePath={notesModalTablePath}
         columns={notesModalColumns}
+        dremioCredentials={credentials}
         onSaved={() => {
           // Reload linked tables with notes
           setLinkedTablesWithNotes([...linkedTablesWithNotes])

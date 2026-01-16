@@ -25,6 +25,8 @@ import {
   Tag,
   FileText,
   Unlink,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react"
 import { 
   TableNote, 
@@ -38,6 +40,7 @@ import {
   unlinkTable,
 } from "@/lib/db"
 import { cn } from "@/lib/utils"
+import { DremioCredentials } from "@/lib/credential-store"
 
 interface ColumnInfo {
   name: string
@@ -51,8 +54,10 @@ interface TableNotesModalProps {
   workspaceId: string | null
   /** Table path (e.g., "source.schema.table") */
   tablePath: string
-  /** Column information from Dremio catalog */
-  columns: ColumnInfo[]
+  /** Column information from Dremio catalog (optional - will fetch if not provided) */
+  columns?: ColumnInfo[]
+  /** Dremio credentials for fetching columns when not provided */
+  dremioCredentials?: DremioCredentials | null
   /** Callback when notes are saved */
   onSaved?: () => void
   /** Callback when table is unlinked from workspace */
@@ -64,6 +69,20 @@ interface ColumnNoteState {
   description: string
   isNew?: boolean
   isDirty?: boolean
+  type?: string
+}
+
+/**
+ * Format a Dremio field type to a readable string
+ */
+function formatColumnType(type: { name: string; precision?: number; scale?: number }): string {
+  if (type.precision !== undefined && type.scale !== undefined) {
+    return `${type.name}(${type.precision},${type.scale})`
+  }
+  if (type.precision !== undefined) {
+    return `${type.name}(${type.precision})`
+  }
+  return type.name
 }
 
 export function TableNotesModal({
@@ -71,7 +90,8 @@ export function TableNotesModal({
   onOpenChange,
   workspaceId,
   tablePath,
-  columns,
+  columns: providedColumns,
+  dremioCredentials,
   onSaved,
   onUnlinked,
 }: TableNotesModalProps) {
@@ -79,6 +99,14 @@ export function TableNotesModal({
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isUnlinking, setIsUnlinking] = useState(false)
+  
+  // Column fetching state
+  const [fetchedColumns, setFetchedColumns] = useState<ColumnInfo[]>([])
+  const [isLoadingColumns, setIsLoadingColumns] = useState(false)
+  const [columnsError, setColumnsError] = useState<string | null>(null)
+  
+  // Use provided columns or fetched columns
+  const columns = providedColumns && providedColumns.length > 0 ? providedColumns : fetchedColumns
   
   // Table note state
   const [tableNoteId, setTableNoteId] = useState<string | null>(null)
@@ -89,7 +117,54 @@ export function TableNotesModal({
   // Column notes state
   const [columnNotes, setColumnNotes] = useState<ColumnNoteState[]>([])
 
-  // Load existing notes when modal opens
+  // Fetch columns from Dremio API
+  const fetchColumnsFromDremio = useCallback(async () => {
+    if (!dremioCredentials || !tablePath) return
+    
+    setIsLoadingColumns(true)
+    setColumnsError(null)
+    
+    try {
+      const response = await fetch("/api/dremio/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: dremioCredentials.endpoint,
+          pat: dremioCredentials.pat,
+          path: tablePath,
+          sslVerify: dremioCredentials.sslVerify,
+        }),
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to fetch table columns")
+      }
+      
+      const data = await response.json()
+      
+      // Extract fields from the dataset
+      if (data.fields && Array.isArray(data.fields)) {
+        const cols: ColumnInfo[] = data.fields.map((field: { name: string; type: { name: string; precision?: number; scale?: number } }) => ({
+          name: field.name,
+          type: formatColumnType(field.type),
+        }))
+        setFetchedColumns(cols)
+        return cols
+      } else {
+        setColumnsError("No columns found for this table")
+        return []
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to fetch columns"
+      setColumnsError(message)
+      return []
+    } finally {
+      setIsLoadingColumns(false)
+    }
+  }, [dremioCredentials, tablePath])
+
+  // Load existing notes and fetch columns if needed when modal opens
   useEffect(() => {
     if (open && workspaceId && tablePath) {
       loadNotes()
@@ -100,7 +175,18 @@ export function TableNotesModal({
     if (!workspaceId) return
     
     setIsLoading(true)
+    setFetchedColumns([])
+    setColumnsError(null)
+    
     try {
+      // If no columns provided, fetch them from Dremio
+      let columnsToUse = providedColumns && providedColumns.length > 0 ? providedColumns : []
+      
+      if (columnsToUse.length === 0 && dremioCredentials) {
+        const fetched = await fetchColumnsFromDremio()
+        columnsToUse = fetched || []
+      }
+      
       // Load table note
       const existingTableNote = await getTableNote(workspaceId, tablePath)
       
@@ -112,14 +198,23 @@ export function TableNotesModal({
         // Load column notes
         const existingColumnNotes = await getColumnNotes(existingTableNote.id)
         
-        // Merge with column info from catalog
-        const mergedColumnNotes: ColumnNoteState[] = columns.map(col => {
-          const existing = existingColumnNotes.find(cn => cn.columnName === col.name)
+        // Merge with column info
+        // Include columns from both sources: fetched columns and existing column notes
+        const columnNamesFromNotes = existingColumnNotes.map(cn => cn.columnName)
+        const allColumnNames = new Set([
+          ...columnsToUse.map(c => c.name),
+          ...columnNamesFromNotes,
+        ])
+        
+        const mergedColumnNotes: ColumnNoteState[] = Array.from(allColumnNames).map(columnName => {
+          const colInfo = columnsToUse.find(c => c.name === columnName)
+          const existing = existingColumnNotes.find(cn => cn.columnName === columnName)
           return {
-            columnName: col.name,
+            columnName,
             description: existing?.description || "",
             isNew: !existing,
             isDirty: false,
+            type: colInfo?.type,
           }
         })
         
@@ -129,11 +224,12 @@ export function TableNotesModal({
         setTableNoteId(null)
         setDescription("")
         setTags([])
-        setColumnNotes(columns.map(col => ({
+        setColumnNotes(columnsToUse.map(col => ({
           columnName: col.name,
           description: "",
           isNew: true,
           isDirty: false,
+          type: col.type,
         })))
       }
     } finally {
@@ -328,15 +424,58 @@ export function TableNotesModal({
                     <Columns3 className="h-3.5 w-3.5" />
                     Column Notes
                   </Label>
-                  <span className="text-xs text-muted-foreground">
-                    {columnsWithNotes} of {columns.length} documented
-                  </span>
+                  {columnNotes.length > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {columnsWithNotes} of {columnNotes.length} documented
+                    </span>
+                  )}
                 </div>
                 
-                <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                  {columnNotes.map((colNote) => {
-                    const colInfo = columns.find(c => c.name === colNote.columnName)
-                    return (
+                {/* Column loading state */}
+                {isLoadingColumns && (
+                  <div className="flex items-center justify-center py-6 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    <span className="text-xs">Loading columns from Dremio...</span>
+                  </div>
+                )}
+                
+                {/* Column error state */}
+                {columnsError && !isLoadingColumns && (
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+                    <div className="flex items-center gap-2 text-destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <span className="text-xs">{columnsError}</span>
+                    </div>
+                    {dremioCredentials && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => loadNotes()}
+                        className="h-7 text-xs"
+                      >
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                )}
+                
+                {/* No columns available */}
+                {!isLoadingColumns && !columnsError && columnNotes.length === 0 && (
+                  <div className="text-center py-6 text-muted-foreground">
+                    <Columns3 className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-xs">
+                      {!dremioCredentials 
+                        ? "Configure Dremio credentials to load column information"
+                        : "No columns found for this table"}
+                    </p>
+                  </div>
+                )}
+                
+                {/* Column notes list */}
+                {columnNotes.length > 0 && (
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                    {columnNotes.map((colNote) => (
                       <div
                         key={colNote.columnName}
                         className={cn(
@@ -351,9 +490,9 @@ export function TableNotesModal({
                             <code className="text-xs font-mono font-medium">
                               {colNote.columnName}
                             </code>
-                            {colInfo && (
+                            {colNote.type && (
                               <span className="text-[10px] text-muted-foreground bg-accent/50 px-1.5 py-0.5 rounded">
-                                {colInfo.type}
+                                {colNote.type}
                               </span>
                             )}
                           </div>
@@ -368,9 +507,9 @@ export function TableNotesModal({
                           className="h-8 text-xs"
                         />
                       </div>
-                    )
-                  })}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </ScrollArea>

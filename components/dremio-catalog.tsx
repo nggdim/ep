@@ -1215,6 +1215,7 @@ export function DremioCatalog({
             name: f.name,
             type: formatColumnType(f.type),
           }))}
+          dremioCredentials={credentials}
           onSaved={() => {
             // Could trigger a refresh or update UI here
           }}
