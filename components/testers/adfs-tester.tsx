@@ -19,7 +19,9 @@ export function AdfsTester({ onResult }: Props) {
   const [clientSecret, setClientSecret] = useState("")
   const [redirectUri, setRedirectUri] = useState("")
   const [resource, setResource] = useState("")
+  const [scope, setScope] = useState("openid")
   const [showSecret, setShowSecret] = useState(false)
+  const [generatedUrl, setGeneratedUrl] = useState("")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
@@ -126,8 +128,11 @@ export function AdfsTester({ onResult }: Props) {
       response_type: "code",
       client_id: clientId.trim(),
       redirect_uri: redirectUri.trim(),
-      scope: "openid",
     })
+    
+    if (scope.trim()) {
+      params.set("scope", scope.trim())
+    }
     
     if (resource.trim()) {
       params.set("resource", resource.trim())
@@ -135,6 +140,15 @@ export function AdfsTester({ onResult }: Props) {
     
     return `${baseUrl}/adfs/oauth2/authorize?${params.toString()}`
   }
+
+  // Update generated URL when inputs change
+  useEffect(() => {
+    if (serverUrl && clientId && redirectUri) {
+      setGeneratedUrl(buildAuthorizationUrl())
+    } else {
+      setGeneratedUrl("")
+    }
+  }, [serverUrl, clientId, redirectUri, scope, resource])
 
   const handleStartOAuthFlow = () => {
     const validation = validateInputs()
@@ -279,6 +293,23 @@ export function AdfsTester({ onResult }: Props) {
             </p>
           </div>
 
+          {/* Scope */}
+          <div>
+            <Label htmlFor="scope" className="text-sm text-muted-foreground mb-1.5 block">
+              Scope (optional)
+            </Label>
+            <Input
+              id="scope"
+              placeholder="openid profile email"
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              className="bg-input font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              OAuth scopes (e.g., openid, profile, email). Leave empty if not needed.
+            </p>
+          </div>
+
           {/* Resource (optional) */}
           <div>
             <Label htmlFor="resource" className="text-sm text-muted-foreground mb-1.5 block">
@@ -295,6 +326,20 @@ export function AdfsTester({ onResult }: Props) {
               The relying party identifier (if required by your ADFS configuration)
             </p>
           </div>
+
+          {/* Generated URL Preview */}
+          {generatedUrl && (
+            <div>
+              <Label className="text-sm text-muted-foreground mb-1.5 block">
+                Authorization URL Preview
+              </Label>
+              <div className="p-2 rounded bg-accent/30 border border-border/50">
+                <code className="text-xs break-all font-mono text-muted-foreground">
+                  {generatedUrl}
+                </code>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
