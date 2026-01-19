@@ -32,7 +32,9 @@ export function AdfsTester({ onResult }: Props) {
   const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
   const [testingConnection, setTestingConnection] = useState(false)
+  const [testingClientConnection, setTestingClientConnection] = useState(false)
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null)
+  const [lastTestMode, setLastTestMode] = useState<"server" | "client" | null>(null)
 
   // Load stored credentials on mount
   useEffect(() => {
@@ -55,7 +57,8 @@ export function AdfsTester({ onResult }: Props) {
     }
   }, [])
 
-  const handleTestConnection = async () => {
+  // Server-side test - fetches metadata via our API server
+  const handleTestServerConnection = async () => {
     if (!serverUrl.trim()) {
       const errorResult = {
         type: "api" as const,
@@ -71,6 +74,7 @@ export function AdfsTester({ onResult }: Props) {
     setTestingConnection(true)
     setResult(null)
     setMetadata(null)
+    setLastTestMode("server")
 
     try {
       const response = await fetch("/api/adfs/metadata", {
@@ -86,8 +90,9 @@ export function AdfsTester({ onResult }: Props) {
           type: "api" as const,
           connectionString: serverUrl,
           status: "error" as const,
-          message: data.error || "Failed to fetch ADFS metadata",
+          message: `[Server] ${data.error || "Failed to fetch ADFS metadata"}`,
           details: {
+            mode: "server-side",
             errorCode: data.errorCode,
             hint: data.hint,
             details: data.details,
@@ -104,8 +109,9 @@ export function AdfsTester({ onResult }: Props) {
         type: "api" as const,
         connectionString: serverUrl,
         status: "success" as const,
-        message: "✅ Successfully connected to ADFS server",
+        message: "✅ [Server] Successfully connected to ADFS",
         details: {
+          mode: "server-side",
           issuer: data.issuer,
           authorization_endpoint: data.authorization_endpoint,
           token_endpoint: data.token_endpoint,
@@ -120,12 +126,117 @@ export function AdfsTester({ onResult }: Props) {
         type: "api" as const,
         connectionString: serverUrl,
         status: "error" as const,
-        message: err instanceof Error ? err.message : "Network error",
+        message: `[Server] ${err instanceof Error ? err.message : "Network error"}`,
+        details: { mode: "server-side" },
       }
       setResult(errorResult)
       onResult(errorResult)
     } finally {
       setTestingConnection(false)
+    }
+  }
+
+  // Client-side test - fetches metadata directly from browser (subject to CORS)
+  const handleTestClientConnection = async () => {
+    if (!serverUrl.trim()) {
+      const errorResult = {
+        type: "api" as const,
+        connectionString: serverUrl || "(empty)",
+        status: "error" as const,
+        message: "Server URL is required to test connection",
+      }
+      setResult(errorResult)
+      onResult(errorResult)
+      return
+    }
+
+    setTestingClientConnection(true)
+    setResult(null)
+    setMetadata(null)
+    setLastTestMode("client")
+
+    const baseUrl = serverUrl.trim().replace(/\/+$/, "")
+    const metadataUrl = `${baseUrl}/adfs/.well-known/openid-configuration`
+
+    try {
+      const response = await fetch(metadataUrl, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+      })
+
+      const responseText = await response.text()
+      
+      if (!response.ok) {
+        const errorResult = {
+          type: "api" as const,
+          connectionString: serverUrl,
+          status: "error" as const,
+          message: `[Client] HTTP ${response.status}: ${response.statusText}`,
+          details: {
+            mode: "client-side (browser)",
+            status: response.status,
+            response: responseText.substring(0, 200),
+          },
+        }
+        setResult(errorResult)
+        onResult(errorResult)
+        return
+      }
+
+      let data
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        const errorResult = {
+          type: "api" as const,
+          connectionString: serverUrl,
+          status: "error" as const,
+          message: "[Client] Invalid JSON response",
+          details: {
+            mode: "client-side (browser)",
+            response: responseText.substring(0, 200),
+          },
+        }
+        setResult(errorResult)
+        onResult(errorResult)
+        return
+      }
+
+      // Success!
+      setMetadata(data)
+      const successResult = {
+        type: "api" as const,
+        connectionString: serverUrl,
+        status: "success" as const,
+        message: "✅ [Client] Successfully connected to ADFS (no CORS issues!)",
+        details: {
+          mode: "client-side (browser)",
+          issuer: data.issuer,
+          authorization_endpoint: data.authorization_endpoint,
+          token_endpoint: data.token_endpoint,
+          scopes_supported: data.scopes_supported,
+          response_types_supported: data.response_types_supported,
+        },
+      }
+      setResult(successResult)
+      onResult(successResult)
+    } catch (err) {
+      // Most likely CORS error
+      const errorResult = {
+        type: "api" as const,
+        connectionString: serverUrl,
+        status: "error" as const,
+        message: `[Client] ${err instanceof Error ? err.message : "Network/CORS error"}`,
+        details: {
+          mode: "client-side (browser)",
+          hint: "This is likely a CORS error - ADFS may not allow browser requests. Try the Server test instead.",
+          url: metadataUrl,
+        },
+      }
+      setResult(errorResult)
+      onResult(errorResult)
+    } finally {
+      setTestingClientConnection(false)
     }
   }
 
@@ -315,32 +426,47 @@ export function AdfsTester({ onResult }: Props) {
             <Label htmlFor="server-url" className="text-sm text-muted-foreground mb-1.5 block">
               ADFS Server URL
             </Label>
-            <div className="flex gap-2">
-              <Input
-                id="server-url"
-                placeholder="https://adfs.example.com"
-                value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
-                className="bg-input font-mono text-sm flex-1"
-              />
+            <Input
+              id="server-url"
+              placeholder="https://adfs.example.com"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              className="bg-input font-mono text-sm"
+            />
+            <div className="flex gap-2 mt-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={handleTestConnection}
-                disabled={testingConnection || !serverUrl.trim()}
-                className="shrink-0"
+                onClick={handleTestServerConnection}
+                disabled={testingConnection || testingClientConnection || !serverUrl.trim()}
+                className="flex-1"
               >
                 {testingConnection ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
                 ) : (
-                  <Wifi className="h-4 w-4" />
+                  <Server className="h-4 w-4 mr-1.5" />
                 )}
-                <span className="ml-1.5 hidden sm:inline">Test</span>
+                Test Server
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestClientConnection}
+                disabled={testingConnection || testingClientConnection || !serverUrl.trim()}
+                className="flex-1"
+              >
+                {testingClientConnection ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+                ) : (
+                  <Globe className="h-4 w-4 mr-1.5" />
+                )}
+                Test Client
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              The base URL of your ADFS server (without /adfs path). Click Test to verify connectivity.
+            <p className="text-xs text-muted-foreground mt-1.5">
+              <strong>Server:</strong> Tests via our API server. <strong>Client:</strong> Tests directly from browser (may fail due to CORS).
             </p>
           </div>
 
@@ -555,8 +681,12 @@ export function AdfsTester({ onResult }: Props) {
       {metadata && (
         <div className="p-3 rounded-lg bg-accent/30 border space-y-2">
           <p className="text-xs font-medium flex items-center gap-2">
-            <Wifi className="h-3.5 w-3.5 text-green-500" />
-            ADFS Server Metadata
+            {lastTestMode === "server" ? (
+              <Server className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Globe className="h-3.5 w-3.5 text-green-500" />
+            )}
+            ADFS Metadata {lastTestMode === "server" ? "(via Server)" : "(via Client)"}
           </p>
           <div className="text-xs space-y-1.5">
             {"issuer" in metadata && metadata.issuer != null && (
