@@ -66,7 +66,7 @@ interface DebugInfo {
   requestBody?: Record<string, unknown>
   responseStatus?: number
   responseData?: unknown
-  mode?: "server" | "client"
+  mode?: "server" | "client" | "no-cors"
 }
 
 type ExchangeMode = "server" | "client" | "no-cors"
