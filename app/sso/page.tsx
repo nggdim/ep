@@ -54,6 +54,20 @@ function formatTimestamp(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString()
 }
 
+interface DebugInfo {
+  code?: string
+  credentials?: {
+    serverUrl: string
+    clientId: string
+    hasSecret: boolean
+    redirectUri: string
+    scope?: string
+  }
+  requestBody?: Record<string, unknown>
+  responseStatus?: number
+  responseData?: unknown
+}
+
 function SSOContent() {
   const searchParams = useSearchParams()
   const [status, setStatus] = useState<"loading" | "exchanging" | "success" | "error" | "no-code" | "no-credentials">("loading")
@@ -61,6 +75,7 @@ function SSOContent() {
   const [decodedToken, setDecodedToken] = useState<DecodedToken | null>(null)
   const [errorMessage, setErrorMessage] = useState<string>("")
   const [copied, setCopied] = useState(false)
+  const [debugInfo, setDebugInfo] = useState<DebugInfo>({})
 
   useEffect(() => {
     const code = searchParams.get("code")
@@ -94,21 +109,45 @@ function SSOContent() {
   const exchangeCode = async (code: string, credentials: ADFSCredentials) => {
     setStatus("exchanging")
     
+    // Build debug info
+    const credentialsDebug = {
+      serverUrl: credentials.serverUrl,
+      clientId: credentials.clientId,
+      hasSecret: !!credentials.clientSecret,
+      redirectUri: credentials.redirectUri,
+      scope: credentials.scope,
+    }
+    
+    setDebugInfo({
+      code: code.substring(0, 50) + (code.length > 50 ? "..." : ""),
+      credentials: credentialsDebug,
+    })
+    
+    const requestBody = {
+      code,
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
+      serverUrl: credentials.serverUrl,
+      redirectUri: credentials.redirectUri,
+      scope: credentials.scope,
+    }
+    
     try {
       const response = await fetch("/api/adfs/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code,
-          clientId: credentials.clientId,
-          clientSecret: credentials.clientSecret,
-          serverUrl: credentials.serverUrl,
-          redirectUri: credentials.redirectUri,
-          scope: credentials.scope,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       const data = await response.json()
+      
+      // Update debug info with response
+      setDebugInfo(prev => ({
+        ...prev,
+        requestBody: { ...requestBody, clientSecret: "***hidden***" },
+        responseStatus: response.status,
+        responseData: data,
+      }))
 
       if (!response.ok || data.error) {
         setStatus("error")
@@ -388,6 +427,69 @@ function SSOContent() {
             </div>
           )}
         </div>
+
+        {/* Debug Panel */}
+        {Object.keys(debugInfo).length > 0 && (
+          <div className="mt-6 rounded-xl border bg-card shadow-sm overflow-hidden">
+            <div className="px-6 py-3 border-b bg-amber-500/10">
+              <h2 className="font-medium text-sm flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                Debug Information
+              </h2>
+            </div>
+            <div className="p-6 space-y-4">
+              {debugInfo.code && (
+                <div>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-1">Authorization Code</h3>
+                  <code className="text-xs bg-accent/30 px-2 py-1 rounded block overflow-auto">
+                    {debugInfo.code}
+                  </code>
+                </div>
+              )}
+              
+              {debugInfo.credentials && (
+                <div>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-1">Credentials from localStorage</h3>
+                  <pre className="text-xs bg-accent/30 p-2 rounded overflow-auto">
+{JSON.stringify(debugInfo.credentials, null, 2)}
+                  </pre>
+                </div>
+              )}
+              
+              {debugInfo.requestBody && (
+                <div>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-1">Request Body Sent to /api/adfs/token</h3>
+                  <pre className="text-xs bg-accent/30 p-2 rounded overflow-auto">
+{JSON.stringify(debugInfo.requestBody, null, 2)}
+                  </pre>
+                </div>
+              )}
+              
+              {debugInfo.responseStatus !== undefined && (
+                <div>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-1">Response Status</h3>
+                  <code className={cn(
+                    "text-xs px-2 py-1 rounded",
+                    debugInfo.responseStatus >= 200 && debugInfo.responseStatus < 300 
+                      ? "bg-green-500/20 text-green-600" 
+                      : "bg-red-500/20 text-red-600"
+                  )}>
+                    {debugInfo.responseStatus}
+                  </code>
+                </div>
+              )}
+              
+              {debugInfo.responseData && (
+                <div>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-1">Response Data</h3>
+                  <pre className="text-xs bg-accent/30 p-2 rounded overflow-auto max-h-64">
+{JSON.stringify(debugInfo.responseData, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )

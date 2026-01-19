@@ -71,7 +71,16 @@ export async function POST(req: NextRequest) {
       }),
     }
 
-    console.log(`Exchanging code at: ${tokenUrl}`)
+    console.log("=== ADFS Token Exchange ===")
+    console.log("Token URL:", tokenUrl)
+    console.log("Request params:", {
+      grant_type: "authorization_code",
+      code: code.substring(0, 20) + "...",
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: scope || "(none)",
+    })
+    
     const response = await undiciFetch(tokenUrl, fetchOptions)
 
     const responseText = await response.text()
