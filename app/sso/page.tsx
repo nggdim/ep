@@ -66,10 +66,10 @@ interface DebugInfo {
   requestBody?: Record<string, unknown>
   responseStatus?: number
   responseData?: unknown
-  mode?: "server" | "client" | "no-cors"
+  mode?: "server" | "client" | "no-cors" | "form"
 }
 
-type ExchangeMode = "server" | "client" | "no-cors"
+type ExchangeMode = "server" | "client" | "no-cors" | "form"
 
 function SSOContent() {
   const searchParams = useSearchParams()
@@ -138,6 +138,8 @@ function SSOContent() {
       await exchangeCodeClient(code, credentials, false)
     } else if (mode === "no-cors") {
       await exchangeCodeClient(code, credentials, true)
+    } else if (mode === "form") {
+      exchangeCodeForm(code, credentials)
     } else {
       await exchangeCodeServer(code, credentials)
     }
@@ -295,6 +297,58 @@ function SSOContent() {
         responseData: { error: errorMsg, hint: "CORS error - ADFS may not allow direct browser requests" },
       }))
     }
+  }
+
+  // Form-based token exchange (bypasses CORS by using form submit)
+  const exchangeCodeForm = (code: string, credentials: ADFSCredentials) => {
+    const tokenUrl = `${credentials.serverUrl}/adfs/oauth2/token`
+    
+    // Update debug info
+    setDebugInfo(prev => ({
+      ...prev,
+      mode: "form",
+      requestBody: {
+        grant_type: "authorization_code",
+        code: code.substring(0, 20) + "...",
+        client_id: credentials.clientId,
+        client_secret: "***hidden***",
+        redirect_uri: credentials.redirectUri,
+        scope: credentials.scope,
+      },
+      responseData: { message: "Form will submit to ADFS - page will show raw JSON response with token" },
+    }))
+    
+    // Create a form and submit it
+    const form = document.createElement("form")
+    form.method = "POST"
+    form.action = tokenUrl
+    form.target = "_blank" // Open in new tab so user doesn't lose this page
+    
+    const fields = {
+      grant_type: "authorization_code",
+      code: code,
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret,
+      redirect_uri: credentials.redirectUri,
+      scope: credentials.scope || "",
+    }
+    
+    Object.entries(fields).forEach(([name, value]) => {
+      if (value) {
+        const input = document.createElement("input")
+        input.type = "hidden"
+        input.name = name
+        input.value = value
+        form.appendChild(input)
+      }
+    })
+    
+    document.body.appendChild(form)
+    form.submit()
+    document.body.removeChild(form)
+    
+    setStatus("error")
+    setErrorMessage("Form submitted in new tab. Check the new tab for the JSON response containing your access_token.")
   }
 
   // Retry with different mode
@@ -559,11 +613,19 @@ function SSOContent() {
                     >
                       No-CORS Test
                     </Button>
+                    <Button
+                      variant={exchangeMode === "form" ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => handleRetry("form")}
+                    >
+                      Form POST (new tab)
+                    </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
                     {exchangeMode === "server" && "Server mode failed - server may not have network access to ADFS."}
                     {exchangeMode === "client" && "Client mode failed - ADFS may not allow CORS."}
                     {exchangeMode === "no-cors" && "No-CORS proves connectivity but can't read the response."}
+                    {exchangeMode === "form" && "Form POST opens a new tab with the raw JSON response."}
                   </p>
                 </div>
               )}
