@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
-import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, ExternalLink, Server, Globe } from "lucide-react"
+import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, ExternalLink, Server, Globe, Wifi } from "lucide-react"
 import { getADFSCredentials, saveADFSCredentials, ADFSCredentials } from "@/lib/credential-store"
 
 type Props = {
@@ -31,6 +31,8 @@ export function AdfsTester({ onResult }: Props) {
   const [saved, setSaved] = useState(false)
   const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
+  const [testingConnection, setTestingConnection] = useState(false)
+  const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null)
 
   // Load stored credentials on mount
   useEffect(() => {
@@ -52,6 +54,80 @@ export function AdfsTester({ onResult }: Props) {
       }
     }
   }, [])
+
+  const handleTestConnection = async () => {
+    if (!serverUrl.trim()) {
+      const errorResult = {
+        type: "api" as const,
+        connectionString: serverUrl || "(empty)",
+        status: "error" as const,
+        message: "Server URL is required to test connection",
+      }
+      setResult(errorResult)
+      onResult(errorResult)
+      return
+    }
+
+    setTestingConnection(true)
+    setResult(null)
+    setMetadata(null)
+
+    try {
+      const response = await fetch("/api/adfs/metadata", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serverUrl: serverUrl.trim() }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || data.error) {
+        const errorResult = {
+          type: "api" as const,
+          connectionString: serverUrl,
+          status: "error" as const,
+          message: data.error || "Failed to fetch ADFS metadata",
+          details: {
+            errorCode: data.errorCode,
+            hint: data.hint,
+            details: data.details,
+          },
+        }
+        setResult(errorResult)
+        onResult(errorResult)
+        return
+      }
+
+      // Success - we got metadata
+      setMetadata(data)
+      const successResult = {
+        type: "api" as const,
+        connectionString: serverUrl,
+        status: "success" as const,
+        message: "✅ Successfully connected to ADFS server",
+        details: {
+          issuer: data.issuer,
+          authorization_endpoint: data.authorization_endpoint,
+          token_endpoint: data.token_endpoint,
+          scopes_supported: data.scopes_supported,
+          response_types_supported: data.response_types_supported,
+        },
+      }
+      setResult(successResult)
+      onResult(successResult)
+    } catch (err) {
+      const errorResult = {
+        type: "api" as const,
+        connectionString: serverUrl,
+        status: "error" as const,
+        message: err instanceof Error ? err.message : "Network error",
+      }
+      setResult(errorResult)
+      onResult(errorResult)
+    } finally {
+      setTestingConnection(false)
+    }
+  }
 
   const validateInputs = (): { valid: boolean; message: string } => {
     if (!serverUrl.trim()) {
@@ -239,15 +315,32 @@ export function AdfsTester({ onResult }: Props) {
             <Label htmlFor="server-url" className="text-sm text-muted-foreground mb-1.5 block">
               ADFS Server URL
             </Label>
-            <Input
-              id="server-url"
-              placeholder="https://adfs.example.com"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              className="bg-input font-mono text-sm"
-            />
+            <div className="flex gap-2">
+              <Input
+                id="server-url"
+                placeholder="https://adfs.example.com"
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                className="bg-input font-mono text-sm flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestConnection}
+                disabled={testingConnection || !serverUrl.trim()}
+                className="shrink-0"
+              >
+                {testingConnection ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Wifi className="h-4 w-4" />
+                )}
+                <span className="ml-1.5 hidden sm:inline">Test</span>
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
-              The base URL of your ADFS server (without /adfs path)
+              The base URL of your ADFS server (without /adfs path). Click Test to verify connectivity.
             </p>
           </div>
 
@@ -457,6 +550,54 @@ export function AdfsTester({ onResult }: Props) {
 
       {/* Result */}
       {result && <ResultDisplay result={result} />}
+
+      {/* Metadata Details */}
+      {metadata && (
+        <div className="p-3 rounded-lg bg-accent/30 border space-y-2">
+          <p className="text-xs font-medium flex items-center gap-2">
+            <Wifi className="h-3.5 w-3.5 text-green-500" />
+            ADFS Server Metadata
+          </p>
+          <div className="text-xs space-y-1.5">
+            {"issuer" in metadata && metadata.issuer != null && (
+              <div>
+                <span className="text-muted-foreground">Issuer: </span>
+                <code className="bg-background px-1 py-0.5 rounded text-[10px]">{String(metadata.issuer)}</code>
+              </div>
+            )}
+            {"token_endpoint" in metadata && metadata.token_endpoint != null && (
+              <div>
+                <span className="text-muted-foreground">Token Endpoint: </span>
+                <code className="bg-background px-1 py-0.5 rounded text-[10px] break-all">{String(metadata.token_endpoint)}</code>
+              </div>
+            )}
+            {Array.isArray(metadata.response_types_supported) && (
+              <div>
+                <span className="text-muted-foreground">Response Types: </span>
+                <code className="bg-background px-1 py-0.5 rounded text-[10px]">
+                  {(metadata.response_types_supported as string[]).join(", ")}
+                </code>
+              </div>
+            )}
+            {Array.isArray(metadata.scopes_supported) && (
+              <div>
+                <span className="text-muted-foreground">Scopes: </span>
+                <code className="bg-background px-1 py-0.5 rounded text-[10px]">
+                  {(metadata.scopes_supported as string[]).join(", ")}
+                </code>
+              </div>
+            )}
+          </div>
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+              View full metadata
+            </summary>
+            <pre className="mt-2 p-2 rounded bg-background text-[10px] overflow-auto max-h-48">
+              {JSON.stringify(metadata, null, 2)}
+            </pre>
+          </details>
+        </div>
+      )}
     </div>
   )
 }
