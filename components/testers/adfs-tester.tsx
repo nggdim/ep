@@ -14,6 +14,7 @@ type Props = {
 }
 
 type TokenExchangeMode = "server" | "client"
+type ResponseType = "code" | "token"  // "code" = Auth Code flow, "token" = Implicit flow (automatic!)
 
 export function AdfsTester({ onResult }: Props) {
   const [serverUrl, setServerUrl] = useState("")
@@ -23,6 +24,7 @@ export function AdfsTester({ onResult }: Props) {
   const [resource, setResource] = useState("")
   const [scope, setScope] = useState("openid")
   const [tokenExchangeMode, setTokenExchangeMode] = useState<TokenExchangeMode>("server")
+  const [responseType, setResponseType] = useState<ResponseType>("token")  // Default to implicit for easier testing
   const [showSecret, setShowSecret] = useState(false)
   const [generatedUrl, setGeneratedUrl] = useState("")
   const [saving, setSaving] = useState(false)
@@ -41,6 +43,7 @@ export function AdfsTester({ onResult }: Props) {
       setScope(stored.scope || "openid")
       setResource(stored.resource || "")
       setTokenExchangeMode(stored.tokenExchangeMode || "server")
+      setResponseType(stored.responseType || "token")  // Default to implicit flow
       setHasStoredCredentials(true)
     } else {
       // Default redirect URI
@@ -65,8 +68,9 @@ export function AdfsTester({ onResult }: Props) {
       return { valid: false, message: "Client ID is required" }
     }
 
-    if (!clientSecret.trim()) {
-      return { valid: false, message: "Client Secret is required" }
+    // Client secret is required for authorization code flow, optional for implicit
+    if (responseType === "code" && !clientSecret.trim()) {
+      return { valid: false, message: "Client Secret is required for Authorization Code flow" }
     }
 
     if (!redirectUri.trim()) {
@@ -106,6 +110,7 @@ export function AdfsTester({ onResult }: Props) {
       scope: scope.trim() || undefined,
       resource: resource.trim() || undefined,
       tokenExchangeMode,
+      responseType,  // "code" or "token" (implicit)
     }
     
     saveADFSCredentials(credentials)
@@ -134,7 +139,7 @@ export function AdfsTester({ onResult }: Props) {
   const buildAuthorizationUrl = (): string => {
     const baseUrl = serverUrl.trim().replace(/\/+$/, "")
     const params = new URLSearchParams({
-      response_type: "code",
+      response_type: responseType,  // "code" for auth code flow, "token" for implicit flow
       client_id: clientId.trim(),
       redirect_uri: redirectUri.trim(),
     })
@@ -157,7 +162,7 @@ export function AdfsTester({ onResult }: Props) {
     } else {
       setGeneratedUrl("")
     }
-  }, [serverUrl, clientId, redirectUri, scope, resource])
+  }, [serverUrl, clientId, redirectUri, scope, resource, responseType])
 
   const handleStartOAuthFlow = () => {
     const validation = validateInputs()
@@ -299,6 +304,40 @@ export function AdfsTester({ onResult }: Props) {
             />
             <p className="text-xs text-muted-foreground mt-1">
               Must match the redirect URI registered with ADFS
+            </p>
+          </div>
+
+          {/* Response Type */}
+          <div>
+            <Label className="text-sm text-muted-foreground mb-1.5 block">
+              Response Type (OAuth Flow)
+            </Label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={responseType === "token" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setResponseType("token")}
+                className="flex-1"
+              >
+                <Play className="h-3.5 w-3.5 mr-1.5" />
+                Implicit (token)
+              </Button>
+              <Button
+                type="button"
+                variant={responseType === "code" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setResponseType("code")}
+                className="flex-1"
+              >
+                <Server className="h-3.5 w-3.5 mr-1.5" />
+                Auth Code (code)
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {responseType === "token" 
+                ? "✅ Implicit: Token returned directly in URL - fully automatic, no server exchange needed!"
+                : "Auth Code: Returns code, then exchanges for token (requires server call or manual step)"}
             </p>
           </div>
 

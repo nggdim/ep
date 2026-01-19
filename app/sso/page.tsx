@@ -66,10 +66,10 @@ interface DebugInfo {
   requestBody?: Record<string, unknown>
   responseStatus?: number
   responseData?: unknown
-  mode?: "server" | "client" | "no-cors" | "form"
+  mode?: "server" | "client" | "no-cors" | "form" | "form-popup"
 }
 
-type ExchangeMode = "server" | "client" | "no-cors" | "form"
+type ExchangeMode = "server" | "client" | "no-cors" | "form" | "form-popup"
 
 function SSOContent() {
   const searchParams = useSearchParams()
@@ -82,8 +82,119 @@ function SSOContent() {
   const [exchangeMode, setExchangeMode] = useState<ExchangeMode>("server")
   const [retryCode, setRetryCode] = useState<string | null>(null)
   const [retryCredentials, setRetryCredentials] = useState<ADFSCredentials | null>(null)
+  const [manualTokenJson, setManualTokenJson] = useState("")
+  const [manualTokenError, setManualTokenError] = useState("")
+  const [waitingForPopup, setWaitingForPopup] = useState(false)
+
+  // Check for token in sessionStorage (from form POST redirect back)
+  useEffect(() => {
+    const storedToken = sessionStorage.getItem("adfs_token_response")
+    if (storedToken) {
+      sessionStorage.removeItem("adfs_token_response")
+      try {
+        const tokenData = JSON.parse(storedToken)
+        
+        if (tokenData.error) {
+          setStatus("error")
+          setErrorMessage(tokenData.error_description || tokenData.error)
+          setTokenResponse(tokenData)
+          return
+        }
+        
+        if (tokenData.access_token) {
+          setTokenResponse(tokenData)
+          const decoded = decodeJWT(tokenData.access_token)
+          setDecodedToken(decoded)
+          setStatus("success")
+          setDebugInfo(prev => ({
+            ...prev,
+            mode: "form",
+            responseData: tokenData,
+          }))
+        }
+      } catch {
+        // Invalid JSON in storage, ignore
+      }
+    }
+  }, [])
+
+  // Listen for postMessage from popup window with token response
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Check if it's a token response
+      if (event.data && typeof event.data === "object" && event.data.type === "adfs-token-response") {
+        const tokenData = event.data.payload
+        
+        if (tokenData.error) {
+          setStatus("error")
+          setErrorMessage(tokenData.error_description || tokenData.error)
+          setTokenResponse(tokenData)
+          return
+        }
+        
+        if (tokenData.access_token) {
+          setTokenResponse(tokenData)
+          const decoded = decodeJWT(tokenData.access_token)
+          setDecodedToken(decoded)
+          setStatus("success")
+          setWaitingForPopup(false)
+          setDebugInfo(prev => ({
+            ...prev,
+            mode: "form",
+            responseData: tokenData,
+          }))
+        }
+      }
+    }
+    
+    window.addEventListener("message", handleMessage)
+    return () => window.removeEventListener("message", handleMessage)
+  }, [])
 
   useEffect(() => {
+    // First, check for implicit flow: token in URL hash (fragment)
+    // Implicit flow returns: /sso#access_token=xxx&token_type=bearer&expires_in=3600
+    if (typeof window !== "undefined" && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1))
+      const accessToken = hashParams.get("access_token")
+      const hashError = hashParams.get("error")
+      const hashErrorDescription = hashParams.get("error_description")
+      
+      if (hashError) {
+        setStatus("error")
+        setErrorMessage(hashErrorDescription || hashError)
+        // Clear the hash
+        window.history.replaceState(null, "", window.location.pathname + window.location.search)
+        return
+      }
+      
+      if (accessToken) {
+        // Implicit flow success! Token is directly in the URL
+        const tokenData: TokenResponse = {
+          access_token: accessToken,
+          token_type: hashParams.get("token_type") || "Bearer",
+          expires_in: hashParams.get("expires_in") ? parseInt(hashParams.get("expires_in")!) : undefined,
+          refresh_token: hashParams.get("refresh_token") || undefined,
+          scope: hashParams.get("scope") || undefined,
+          id_token: hashParams.get("id_token") || undefined,
+        }
+        
+        setTokenResponse(tokenData)
+        const decoded = decodeJWT(accessToken)
+        setDecodedToken(decoded)
+        setStatus("success")
+        setDebugInfo({
+          mode: undefined,
+          responseData: { ...tokenData, source: "implicit_flow_url_hash" },
+        })
+        
+        // Clear the hash for security (token shouldn't stay in URL)
+        window.history.replaceState(null, "", window.location.pathname + window.location.search)
+        return
+      }
+    }
+    
+    // Authorization Code flow: check for code in query params
     const code = searchParams.get("code")
     const error = searchParams.get("error")
     const errorDescription = searchParams.get("error_description")
@@ -139,7 +250,9 @@ function SSOContent() {
     } else if (mode === "no-cors") {
       await exchangeCodeClient(code, credentials, true)
     } else if (mode === "form") {
-      exchangeCodeForm(code, credentials)
+      exchangeCodeForm(code, credentials, false) // Same window
+    } else if (mode === "form-popup") {
+      exchangeCodeForm(code, credentials, true) // Popup
     } else {
       await exchangeCodeServer(code, credentials)
     }
@@ -300,7 +413,7 @@ function SSOContent() {
   }
 
   // Form-based token exchange (bypasses CORS by using form submit)
-  const exchangeCodeForm = (code: string, credentials: ADFSCredentials) => {
+  const exchangeCodeForm = (code: string, credentials: ADFSCredentials, usePopup = false) => {
     const tokenUrl = `${credentials.serverUrl}/adfs/oauth2/token`
     
     // Update debug info
@@ -315,14 +428,19 @@ function SSOContent() {
         redirect_uri: credentials.redirectUri,
         scope: credentials.scope,
       },
-      responseData: { message: "Form will submit to ADFS - page will show raw JSON response with token" },
+      responseData: { message: "Form will submit to ADFS - use the bookmarklet to send the token back" },
     }))
     
     // Create a form and submit it
     const form = document.createElement("form")
     form.method = "POST"
     form.action = tokenUrl
-    form.target = "_blank" // Open in new tab so user doesn't lose this page
+    
+    if (usePopup) {
+      form.target = "adfs_token_popup"
+      window.open("about:blank", "adfs_token_popup", "width=600,height=400")
+    }
+    // If not popup, form submits in current window (default)
     
     const fields = {
       grant_type: "authorization_code",
@@ -347,8 +465,24 @@ function SSOContent() {
     form.submit()
     document.body.removeChild(form)
     
-    setStatus("error")
-    setErrorMessage("Form submitted in new tab. Check the new tab for the JSON response containing your access_token.")
+    if (usePopup) {
+      setWaitingForPopup(true)
+      setStatus("exchanging")
+      setErrorMessage("")
+    }
+    // If same window, page will navigate away - no state to set
+  }
+  
+  // Generate bookmarklet code - stores in sessionStorage and redirects back
+  const getBookmarkletCode = () => {
+    const returnUrl = typeof window !== "undefined" ? `${window.location.origin}/sso` : "/sso"
+    return `javascript:(function(){try{var t=document.body.innerText;JSON.parse(t);sessionStorage.setItem('adfs_token_response',t);window.location.href='${returnUrl}';}catch(e){alert('Error: '+e.message);}})();`
+  }
+  
+  // Generate bookmarklet for popup mode (uses postMessage)
+  const getPopupBookmarkletCode = () => {
+    const origin = typeof window !== "undefined" ? window.location.origin : ""
+    return `javascript:(function(){try{var t=document.body.innerText;var d=JSON.parse(t);window.opener.postMessage({type:'adfs-token-response',payload:d},'${origin}');window.close();}catch(e){alert('Error: '+e.message);}})();`
   }
 
   // Retry with different mode
@@ -370,6 +504,49 @@ function SSOContent() {
       await navigator.clipboard.writeText(tokenResponse.access_token)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  // Handle manual token paste from Form POST result
+  const handleManualTokenPaste = () => {
+    setManualTokenError("")
+    
+    if (!manualTokenJson.trim()) {
+      setManualTokenError("Please paste the JSON response from ADFS")
+      return
+    }
+    
+    try {
+      const data = JSON.parse(manualTokenJson.trim())
+      
+      if (data.error) {
+        setManualTokenError(`ADFS returned an error: ${data.error_description || data.error}`)
+        return
+      }
+      
+      if (!data.access_token) {
+        setManualTokenError("No access_token found in the JSON response")
+        return
+      }
+      
+      // Success! Set the token response
+      setTokenResponse(data)
+      
+      // Try to decode the access token if it's a JWT
+      if (data.access_token) {
+        const decoded = decodeJWT(data.access_token)
+        setDecodedToken(decoded)
+      }
+      
+      setStatus("success")
+      setManualTokenJson("")
+      setDebugInfo(prev => ({
+        ...prev,
+        mode: "form",
+        responseData: data,
+      }))
+    } catch {
+      setManualTokenError("Invalid JSON - please paste the complete JSON response from ADFS")
     }
   }
 
@@ -423,23 +600,71 @@ function SSOContent() {
               <div>
                 <h1 className="font-semibold text-lg">
                   {status === "loading" && "Initializing..."}
-                  {status === "exchanging" && "Exchanging Authorization Code..."}
+                  {status === "exchanging" && !waitingForPopup && "Exchanging Authorization Code..."}
+                  {status === "exchanging" && waitingForPopup && "Waiting for Token from Popup..."}
                   {status === "success" && "Authentication Successful"}
                   {status === "error" && "Authentication Failed"}
-                  {status === "no-code" && "No Authorization Code"}
+                  {status === "no-code" && "Waiting for ADFS Response"}
                   {status === "no-credentials" && "ADFS Credentials Not Configured"}
                 </h1>
                 <p className="text-sm text-muted-foreground">
                   {status === "loading" && "Please wait..."}
-                  {status === "exchanging" && "Contacting ADFS server to exchange code for token..."}
+                  {status === "exchanging" && !waitingForPopup && "Contacting ADFS server to exchange code for token..."}
+                  {status === "exchanging" && waitingForPopup && "Complete the steps below to receive the token"}
                   {status === "success" && "Token received successfully"}
                   {status === "error" && errorMessage}
-                  {status === "no-code" && "This page expects a 'code' parameter from ADFS redirect"}
+                  {status === "no-code" && "Start the OAuth flow from Settings to authenticate"}
                   {status === "no-credentials" && "Please configure ADFS credentials in settings first"}
                 </p>
               </div>
             </div>
           </div>
+
+          {/* Waiting for Popup - Bookmarklet Instructions */}
+          {status === "exchanging" && waitingForPopup && (
+            <div className="p-6 space-y-4">
+              <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                <h3 className="font-medium text-sm mb-3">Steps to complete token exchange:</h3>
+                <ol className="text-sm space-y-3 list-decimal list-inside">
+                  <li>A popup window opened with the ADFS response (JSON)</li>
+                  <li>
+                    <span className="font-medium">Drag this button to your bookmarks bar:</span>
+                    <a
+                      href={getPopupBookmarkletCode()}
+                      className="ml-2 inline-flex items-center gap-1 px-3 py-1 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        alert("Drag this button to your bookmarks bar, then click it in the ADFS popup window!")
+                      }}
+                    >
+                      📤 Send Token to SSO
+                    </a>
+                  </li>
+                  <li>Go to the popup window and click the bookmarklet</li>
+                  <li>The token will automatically appear here!</li>
+                </ol>
+              </div>
+              
+              <div className="text-xs text-muted-foreground">
+                <p className="mb-2">Or run this in the popup&apos;s browser console (F12):</p>
+                <pre className="p-2 rounded bg-accent/50 overflow-x-auto text-[10px]">
+                  {`window.opener.postMessage({type:'adfs-token-response',payload:JSON.parse(document.body.innerText)},'*');window.close();`}
+                </pre>
+              </div>
+              
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => {
+                  setWaitingForPopup(false)
+                  setStatus("error")
+                  setErrorMessage("Cancelled waiting for popup")
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
 
           {/* Token Details */}
           {status === "success" && tokenResponse && (
@@ -618,17 +843,85 @@ function SSOContent() {
                       size="sm"
                       onClick={() => handleRetry("form")}
                     >
-                      Form POST (new tab)
+                      Form POST
+                    </Button>
+                    <Button
+                      variant={exchangeMode === "form-popup" ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => handleRetry("form-popup")}
+                    >
+                      Form (popup)
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
                     {exchangeMode === "server" && "Server mode failed - server may not have network access to ADFS."}
                     {exchangeMode === "client" && "Client mode failed - ADFS may not allow CORS."}
                     {exchangeMode === "no-cors" && "No-CORS proves connectivity but can't read the response."}
-                    {exchangeMode === "form" && "Form POST opens a new tab with the raw JSON response."}
+                    {exchangeMode === "form" && "Form POST in same window - use bookmarklet to return with token."}
+                    {exchangeMode === "form-popup" && "Form POST in popup - use bookmarklet to send token back."}
                   </p>
+                  
+                  {/* Instructions for Form POST modes */}
+                  <div className="mt-3 p-3 rounded bg-blue-500/10 border border-blue-500/30 space-y-3">
+                    <p className="text-xs font-medium">After clicking Form POST, on the ADFS JSON page:</p>
+                    
+                    {/* Option 1: Console command */}
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground">Option 1: Open console (F12) and paste this:</p>
+                      <div className="flex gap-2">
+                        <code className="flex-1 text-[10px] p-1.5 rounded bg-background border overflow-x-auto">
+                          sessionStorage.setItem(&apos;adfs_token_response&apos;,document.body.innerText);history.back();
+                        </code>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs shrink-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText("sessionStorage.setItem('adfs_token_response',document.body.innerText);history.back();")
+                            alert("Copied! Now click Form POST, then paste this in the browser console (F12)")
+                          }}
+                        >
+                          <Copy className="h-3 w-3 mr-1" />
+                          Copy
+                        </Button>
+                      </div>
+                    </div>
+                    
+                    {/* Option 2: Manual copy */}
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground">Option 2: Copy the JSON (Ctrl+A, Ctrl+C), go back, and paste below</p>
+                    </div>
+                  </div>
                 </div>
               )}
+
+              {/* Manual Token Paste - for Form POST results */}
+              <div className="p-4 rounded-lg bg-primary/5 border border-primary/20">
+                <p className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <Copy className="h-4 w-4" />
+                  Paste Token Response (from Form POST)
+                </p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  If you used Form POST, copy the JSON response from the new tab and paste it here:
+                </p>
+                <textarea
+                  className="w-full h-24 p-2 text-xs font-mono bg-background border rounded resize-none"
+                  placeholder='{"access_token": "eyJ...", "token_type": "Bearer", ...}'
+                  value={manualTokenJson}
+                  onChange={(e) => setManualTokenJson(e.target.value)}
+                />
+                {manualTokenError && (
+                  <p className="text-xs text-destructive mt-1">{manualTokenError}</p>
+                )}
+                <Button
+                  size="sm"
+                  className="mt-2"
+                  onClick={handleManualTokenPaste}
+                  disabled={!manualTokenJson.trim()}
+                >
+                  Parse &amp; Display Token
+                </Button>
+              </div>
               
               {tokenResponse && (
                 <details>
