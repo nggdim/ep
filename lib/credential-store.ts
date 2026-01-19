@@ -22,7 +22,7 @@ export interface ADFSCredentials {
   scope?: string         // e.g., "openid profile email"
   resource?: string      // Relying party identifier
   tokenExchangeMode?: "server" | "client"  // Where to exchange the code for token
-  responseType?: "code" | "token"  // "code" = Authorization Code flow, "token" = Implicit flow (automatic)
+  responseType?: "code" | "token" | "id_token" | "id_token token"  // OAuth response type
 }
 
 export interface StoredCredentials {

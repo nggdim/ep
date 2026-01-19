@@ -17,6 +17,7 @@ import {
   Check,
   Home,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -85,6 +86,12 @@ function SSOContent() {
   const [manualTokenJson, setManualTokenJson] = useState("")
   const [manualTokenError, setManualTokenError] = useState("")
   const [waitingForPopup, setWaitingForPopup] = useState(false)
+  const [urlDebugInfo, setUrlDebugInfo] = useState<{
+    fullUrl?: string
+    hash?: string
+    search?: string
+    hashParams?: Record<string, string>
+  }>({})
 
   // Check for token in sessionStorage (from form POST redirect back)
   useEffect(() => {
@@ -152,6 +159,23 @@ function SSOContent() {
   }, [])
 
   useEffect(() => {
+    // Capture URL debug info for troubleshooting
+    if (typeof window !== "undefined") {
+      const hashParams: Record<string, string> = {}
+      if (window.location.hash) {
+        const params = new URLSearchParams(window.location.hash.substring(1))
+        params.forEach((value, key) => {
+          hashParams[key] = value.substring(0, 50) + (value.length > 50 ? "..." : "")
+        })
+      }
+      setUrlDebugInfo({
+        fullUrl: window.location.href,
+        hash: window.location.hash || "(none)",
+        search: window.location.search || "(none)",
+        hashParams: Object.keys(hashParams).length > 0 ? hashParams : undefined,
+      })
+    }
+    
     // First, check for implicit flow: token in URL hash (fragment)
     // Implicit flow returns: /sso#access_token=xxx&token_type=bearer&expires_in=3600
     if (typeof window !== "undefined" && window.location.hash) {
@@ -168,20 +192,27 @@ function SSOContent() {
         return
       }
       
-      if (accessToken) {
+      // Check for access_token OR id_token (some ADFS only support id_token)
+      const idToken = hashParams.get("id_token")
+      
+      if (accessToken || idToken) {
         // Implicit flow success! Token is directly in the URL
         const tokenData: TokenResponse = {
-          access_token: accessToken,
+          access_token: accessToken || undefined,
           token_type: hashParams.get("token_type") || "Bearer",
           expires_in: hashParams.get("expires_in") ? parseInt(hashParams.get("expires_in")!) : undefined,
           refresh_token: hashParams.get("refresh_token") || undefined,
           scope: hashParams.get("scope") || undefined,
-          id_token: hashParams.get("id_token") || undefined,
+          id_token: idToken || undefined,
         }
         
         setTokenResponse(tokenData)
-        const decoded = decodeJWT(accessToken)
-        setDecodedToken(decoded)
+        // Decode whichever token we have
+        const tokenToDecode = accessToken || idToken
+        if (tokenToDecode) {
+          const decoded = decodeJWT(tokenToDecode)
+          setDecodedToken(decoded)
+        }
         setStatus("success")
         setDebugInfo({
           mode: undefined,
@@ -508,6 +539,32 @@ function SSOContent() {
   }
 
   // Handle manual token paste from Form POST result
+  const resetState = () => {
+    // Clear all state for a fresh start
+    setStatus("loading")
+    setTokenResponse(null)
+    setDecodedToken(null)
+    setErrorMessage("")
+    setCopied(false)
+    setDebugInfo({})
+    setRetryCode(null)
+    setRetryCredentials(null)
+    setManualTokenJson("")
+    setManualTokenError("")
+    setWaitingForPopup(false)
+    setUrlDebugInfo({})
+    
+    // Clear sessionStorage
+    sessionStorage.removeItem("adfs_token_response")
+    sessionStorage.removeItem("adfs_form_post_pending")
+    
+    // Clear URL hash and query params
+    window.history.replaceState(null, "", window.location.pathname)
+    
+    // Set to no-code after reset
+    setTimeout(() => setStatus("no-code"), 100)
+  }
+
   const handleManualTokenPaste = () => {
     setManualTokenError("")
     
@@ -560,6 +617,10 @@ function SSOContent() {
             <span className="font-semibold">ADFS SSO Callback</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={resetState}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Reset
+            </Button>
             <Button variant="ghost" size="sm" asChild>
               <a href="/">
                 <Home className="h-4 w-4 mr-2" />
@@ -938,7 +999,7 @@ function SSOContent() {
 
           {/* Instructions for no-code or no-credentials */}
           {(status === "no-code" || status === "no-credentials") && (
-            <div className="p-6">
+            <div className="p-6 space-y-4">
               <div className="text-sm text-muted-foreground space-y-2">
                 {status === "no-code" && (
                   <>
@@ -946,7 +1007,7 @@ function SSOContent() {
                     <ol className="list-decimal list-inside space-y-1 ml-2">
                       <li>Configure ADFS credentials in the application settings</li>
                       <li>Navigate to your ADFS authorization URL</li>
-                      <li>After authentication, ADFS will redirect here with the code</li>
+                      <li>After authentication, ADFS will redirect here with the code or token</li>
                     </ol>
                   </>
                 )}
@@ -959,6 +1020,39 @@ function SSOContent() {
                   </>
                 )}
               </div>
+              
+              {/* URL Debug Info */}
+              {status === "no-code" && urlDebugInfo.fullUrl && (
+                <div className="p-4 rounded-lg bg-accent/30 border space-y-3">
+                  <h3 className="text-sm font-medium">URL Debug Info</h3>
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <span className="text-muted-foreground">Full URL: </span>
+                      <code className="break-all bg-background px-1 py-0.5 rounded">{urlDebugInfo.fullUrl}</code>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Hash: </span>
+                      <code className="break-all bg-background px-1 py-0.5 rounded">{urlDebugInfo.hash}</code>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Query: </span>
+                      <code className="break-all bg-background px-1 py-0.5 rounded">{urlDebugInfo.search}</code>
+                    </div>
+                    {urlDebugInfo.hashParams && (
+                      <div>
+                        <span className="text-muted-foreground">Hash Params: </span>
+                        <pre className="mt-1 p-2 bg-background rounded text-xs overflow-auto">
+                          {JSON.stringify(urlDebugInfo.hashParams, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    💡 If you see a code or access_token in the URL above but the page shows this message, 
+                    please share the URL format so we can fix parsing.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

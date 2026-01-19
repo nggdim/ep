@@ -14,7 +14,7 @@ type Props = {
 }
 
 type TokenExchangeMode = "server" | "client"
-type ResponseType = "code" | "token"  // "code" = Auth Code flow, "token" = Implicit flow (automatic!)
+type ResponseType = "code" | "token" | "id_token" | "id_token token"
 
 export function AdfsTester({ onResult }: Props) {
   const [serverUrl, setServerUrl] = useState("")
@@ -178,6 +178,10 @@ export function AdfsTester({ onResult }: Props) {
       return
     }
 
+    // Clear any stale SSO state for a clean slate
+    sessionStorage.removeItem("adfs_token_response")
+    sessionStorage.removeItem("adfs_form_post_pending")
+    
     // Save credentials first
     handleSaveCredentials()
     
@@ -200,6 +204,10 @@ export function AdfsTester({ onResult }: Props) {
       return
     }
 
+    // Clear any stale SSO state for a clean slate
+    sessionStorage.removeItem("adfs_token_response")
+    sessionStorage.removeItem("adfs_form_post_pending")
+    
     // Save credentials first
     handleSaveCredentials()
     
@@ -312,32 +320,49 @@ export function AdfsTester({ onResult }: Props) {
             <Label className="text-sm text-muted-foreground mb-1.5 block">
               Response Type (OAuth Flow)
             </Label>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant={responseType === "token" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setResponseType("token")}
-                className="flex-1"
-              >
-                <Play className="h-3.5 w-3.5 mr-1.5" />
-                Implicit (token)
-              </Button>
+            <div className="grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant={responseType === "code" ? "default" : "outline"}
                 size="sm"
                 onClick={() => setResponseType("code")}
-                className="flex-1"
               >
                 <Server className="h-3.5 w-3.5 mr-1.5" />
-                Auth Code (code)
+                code
+              </Button>
+              <Button
+                type="button"
+                variant={responseType === "token" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setResponseType("token")}
+              >
+                <Play className="h-3.5 w-3.5 mr-1.5" />
+                token
+              </Button>
+              <Button
+                type="button"
+                variant={responseType === "id_token" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setResponseType("id_token")}
+              >
+                <Shield className="h-3.5 w-3.5 mr-1.5" />
+                id_token
+              </Button>
+              <Button
+                type="button"
+                variant={responseType === "id_token token" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setResponseType("id_token token")}
+              >
+                <Shield className="h-3.5 w-3.5 mr-1.5" />
+                id_token token
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {responseType === "token" 
-                ? "✅ Implicit: Token returned directly in URL - fully automatic, no server exchange needed!"
-                : "Auth Code: Returns code, then exchanges for token (requires server call or manual step)"}
+              {responseType === "code" && "Auth Code: Returns code, then exchange for token (requires server/manual step)"}
+              {responseType === "token" && "✅ Implicit: Access token returned directly in URL - automatic!"}
+              {responseType === "id_token" && "✅ Implicit: ID token (JWT) returned directly in URL - automatic!"}
+              {responseType === "id_token token" && "✅ Implicit: Both ID token and access token in URL - automatic!"}
             </p>
           </div>
 
