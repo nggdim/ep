@@ -19,6 +19,8 @@ export interface ADFSCredentials {
   clientId: string
   clientSecret: string
   redirectUri: string    // e.g., "http://localhost:3000/sso"
+  scope?: string         // e.g., "openid profile email"
+  resource?: string      // Relying party identifier
 }
 
 export interface StoredCredentials {

@@ -3,7 +3,7 @@ import { Agent, fetch as undiciFetch } from "undici"
 
 export async function POST(req: NextRequest) {
   try {
-    const { code, clientId, clientSecret, serverUrl, redirectUri } = await req.json()
+    const { code, clientId, clientSecret, serverUrl, redirectUri, scope } = await req.json()
 
     // Validate required fields
     if (!code) {
@@ -51,6 +51,11 @@ export async function POST(req: NextRequest) {
       client_secret: clientSecret,
       redirect_uri: redirectUri,
     })
+
+    // Add scope if provided
+    if (scope) {
+      params.set("scope", scope)
+    }
 
     // Create fetch options with SSL verification bypass (ADFS often uses self-signed certs)
     const fetchOptions: Parameters<typeof undiciFetch>[1] = {

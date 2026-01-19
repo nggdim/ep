@@ -104,6 +104,7 @@ function SSOContent() {
           clientSecret: credentials.clientSecret,
           serverUrl: credentials.serverUrl,
           redirectUri: credentials.redirectUri,
+          scope: credentials.scope,
         }),
       })
 

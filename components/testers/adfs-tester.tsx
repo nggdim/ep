@@ -35,6 +35,8 @@ export function AdfsTester({ onResult }: Props) {
       setClientId(stored.clientId)
       setClientSecret(stored.clientSecret)
       setRedirectUri(stored.redirectUri)
+      setScope(stored.scope || "openid")
+      setResource(stored.resource || "")
       setHasStoredCredentials(true)
     } else {
       // Default redirect URI
@@ -97,6 +99,8 @@ export function AdfsTester({ onResult }: Props) {
       clientId: clientId.trim(),
       clientSecret: clientSecret.trim(),
       redirectUri: redirectUri.trim(),
+      scope: scope.trim() || undefined,
+      resource: resource.trim() || undefined,
     }
     
     saveADFSCredentials(credentials)
