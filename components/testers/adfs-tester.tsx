@@ -6,12 +6,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
-import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, ExternalLink } from "lucide-react"
+import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, ExternalLink, Server, Globe } from "lucide-react"
 import { getADFSCredentials, saveADFSCredentials, ADFSCredentials } from "@/lib/credential-store"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
 }
+
+type TokenExchangeMode = "server" | "client"
 
 export function AdfsTester({ onResult }: Props) {
   const [serverUrl, setServerUrl] = useState("")
@@ -20,6 +22,7 @@ export function AdfsTester({ onResult }: Props) {
   const [redirectUri, setRedirectUri] = useState("")
   const [resource, setResource] = useState("")
   const [scope, setScope] = useState("openid")
+  const [tokenExchangeMode, setTokenExchangeMode] = useState<TokenExchangeMode>("server")
   const [showSecret, setShowSecret] = useState(false)
   const [generatedUrl, setGeneratedUrl] = useState("")
   const [saving, setSaving] = useState(false)
@@ -37,6 +40,7 @@ export function AdfsTester({ onResult }: Props) {
       setRedirectUri(stored.redirectUri)
       setScope(stored.scope || "openid")
       setResource(stored.resource || "")
+      setTokenExchangeMode(stored.tokenExchangeMode || "server")
       setHasStoredCredentials(true)
     } else {
       // Default redirect URI
@@ -101,6 +105,7 @@ export function AdfsTester({ onResult }: Props) {
       redirectUri: redirectUri.trim(),
       scope: scope.trim() || undefined,
       resource: resource.trim() || undefined,
+      tokenExchangeMode,
     }
     
     saveADFSCredentials(credentials)

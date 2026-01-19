@@ -66,7 +66,10 @@ interface DebugInfo {
   requestBody?: Record<string, unknown>
   responseStatus?: number
   responseData?: unknown
+  mode?: "server" | "client"
 }
+
+type ExchangeMode = "server" | "client"
 
 function SSOContent() {
   const searchParams = useSearchParams()
@@ -76,6 +79,9 @@ function SSOContent() {
   const [errorMessage, setErrorMessage] = useState<string>("")
   const [copied, setCopied] = useState(false)
   const [debugInfo, setDebugInfo] = useState<DebugInfo>({})
+  const [exchangeMode, setExchangeMode] = useState<ExchangeMode>("server")
+  const [retryCode, setRetryCode] = useState<string | null>(null)
+  const [retryCredentials, setRetryCredentials] = useState<ADFSCredentials | null>(null)
 
   useEffect(() => {
     const code = searchParams.get("code")
@@ -102,11 +108,15 @@ function SSOContent() {
       return
     }
 
+    // Save for potential retry with different mode
+    setRetryCode(code)
+    setRetryCredentials(credentials)
+    
     // Exchange the code for a token
-    exchangeCode(code, credentials)
-  }, [searchParams])
+    exchangeCode(code, credentials, exchangeMode)
+  }, [searchParams, exchangeMode])
 
-  const exchangeCode = async (code: string, credentials: ADFSCredentials) => {
+  const exchangeCode = async (code: string, credentials: ADFSCredentials, mode: ExchangeMode) => {
     setStatus("exchanging")
     
     // Build debug info
@@ -121,8 +131,18 @@ function SSOContent() {
     setDebugInfo({
       code: code.substring(0, 50) + (code.length > 50 ? "..." : ""),
       credentials: credentialsDebug,
+      mode,
     })
     
+    if (mode === "client") {
+      await exchangeCodeClient(code, credentials)
+    } else {
+      await exchangeCodeServer(code, credentials)
+    }
+  }
+
+  // Server-side token exchange (via our API)
+  const exchangeCodeServer = async (code: string, credentials: ADFSCredentials) => {
     const requestBody = {
       code,
       clientId: credentials.clientId,
@@ -168,6 +188,100 @@ function SSOContent() {
     } catch (err) {
       setStatus("error")
       setErrorMessage(err instanceof Error ? err.message : "Failed to exchange code")
+    }
+  }
+
+  // Client-side token exchange (direct to ADFS from browser)
+  const exchangeCodeClient = async (code: string, credentials: ADFSCredentials) => {
+    const tokenUrl = `${credentials.serverUrl}/adfs/oauth2/token`
+    
+    // Build form data (ADFS expects application/x-www-form-urlencoded)
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: code,
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret,
+      redirect_uri: credentials.redirectUri,
+    })
+    
+    if (credentials.scope) {
+      params.set("scope", credentials.scope)
+    }
+    
+    const requestBody = {
+      grant_type: "authorization_code",
+      code: code.substring(0, 20) + "...",
+      client_id: credentials.clientId,
+      client_secret: "***hidden***",
+      redirect_uri: credentials.redirectUri,
+      scope: credentials.scope,
+    }
+    
+    try {
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      })
+
+      const responseText = await response.text()
+      let data: Record<string, unknown>
+      
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        data = { raw_response: responseText }
+      }
+      
+      // Update debug info with response
+      setDebugInfo(prev => ({
+        ...prev,
+        requestBody,
+        responseStatus: response.status,
+        responseData: data,
+      }))
+
+      if (!response.ok || data.error) {
+        setStatus("error")
+        setErrorMessage(String(data.error_description || data.error || "Failed to exchange code"))
+        setTokenResponse(data as TokenResponse)
+        return
+      }
+
+      setTokenResponse(data as TokenResponse)
+      
+      // Try to decode the access token if it's a JWT
+      if (data.access_token) {
+        const decoded = decodeJWT(String(data.access_token))
+        setDecodedToken(decoded)
+      }
+      
+      setStatus("success")
+    } catch (err) {
+      setStatus("error")
+      const errorMsg = err instanceof Error ? err.message : "Failed to exchange code"
+      setErrorMessage(`Client-side error: ${errorMsg}. This may be due to CORS - ADFS may not allow browser requests.`)
+      setDebugInfo(prev => ({
+        ...prev,
+        requestBody,
+        responseData: { error: errorMsg, hint: "CORS error - ADFS may not allow direct browser requests" },
+      }))
+    }
+  }
+
+  // Retry with different mode
+  const handleRetry = (mode: ExchangeMode) => {
+    if (retryCode && retryCredentials) {
+      setExchangeMode(mode)
+      setStatus("loading")
+      setErrorMessage("")
+      setTokenResponse(null)
+      setDecodedToken(null)
+      setTimeout(() => {
+        exchangeCode(retryCode, retryCredentials, mode)
+      }, 100)
     }
   }
 
@@ -387,17 +501,49 @@ function SSOContent() {
             </div>
           )}
 
-          {/* Error Details */}
-          {status === "error" && tokenResponse && (
-            <div className="p-6">
-              <details>
-                <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground">
-                  View error details
-                </summary>
-                <pre className="mt-2 p-3 rounded bg-accent/30 text-xs overflow-auto">
-                  {JSON.stringify(tokenResponse, null, 2)}
-                </pre>
-              </details>
+          {/* Error Details and Retry Options */}
+          {status === "error" && (
+            <div className="p-6 space-y-4">
+              {/* Retry with different mode */}
+              {retryCode && retryCredentials && (
+                <div className="p-4 rounded-lg bg-accent/30 border">
+                  <p className="text-sm font-medium mb-2">Try a different exchange mode:</p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant={exchangeMode === "server" ? "outline" : "default"}
+                      size="sm"
+                      onClick={() => handleRetry("client")}
+                      disabled={exchangeMode === "client"}
+                    >
+                      Client-side (direct to ADFS)
+                    </Button>
+                    <Button
+                      variant={exchangeMode === "client" ? "outline" : "default"}
+                      size="sm"
+                      onClick={() => handleRetry("server")}
+                      disabled={exchangeMode === "server"}
+                    >
+                      Server-side (via API)
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {exchangeMode === "server" 
+                      ? "Server mode failed. Try client mode (requires ADFS CORS support)."
+                      : "Client mode failed. Try server mode (requires server network access to ADFS)."}
+                  </p>
+                </div>
+              )}
+              
+              {tokenResponse && (
+                <details>
+                  <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground">
+                    View error details
+                  </summary>
+                  <pre className="mt-2 p-3 rounded bg-accent/30 text-xs overflow-auto">
+                    {JSON.stringify(tokenResponse, null, 2)}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
 
@@ -462,6 +608,9 @@ function SSOContent() {
                   <pre className="text-xs bg-accent/30 p-2 rounded overflow-auto">
 {JSON.stringify(debugInfo.requestBody, null, 2)}
                   </pre>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Note: The API adds <code className="bg-accent px-1 rounded">grant_type: &quot;authorization_code&quot;</code> when calling ADFS
+                  </p>
                 </div>
               )}
               

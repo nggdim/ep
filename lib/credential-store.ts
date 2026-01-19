@@ -21,6 +21,7 @@ export interface ADFSCredentials {
   redirectUri: string    // e.g., "http://localhost:3000/sso"
   scope?: string         // e.g., "openid profile email"
   resource?: string      // Relying party identifier
+  tokenExchangeMode?: "server" | "client"  // Where to exchange the code for token
 }
 
 export interface StoredCredentials {

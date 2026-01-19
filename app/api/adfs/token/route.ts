@@ -116,9 +116,30 @@ export async function POST(req: NextRequest) {
     })
   } catch (error) {
     console.error("ADFS token exchange error:", error)
+    
+    // Extract detailed error information
+    const errorDetails: Record<string, unknown> = {
+      message: error instanceof Error ? error.message : "Unknown error occurred",
+      name: error instanceof Error ? error.name : "Error",
+    }
+    
+    // Include cause if available (common for network errors)
+    if (error instanceof Error && "cause" in error) {
+      errorDetails.cause = String(error.cause)
+    }
+    
+    // Include code if available (e.g., ECONNREFUSED, CERT_ERROR)
+    if (error && typeof error === "object" && "code" in error) {
+      errorDetails.code = (error as { code: string }).code
+    }
+    
     return new Response(
       JSON.stringify({
-        error: error instanceof Error ? error.message : "Unknown error occurred",
+        error: `Network error: ${errorDetails.message}`,
+        errorType: errorDetails.name,
+        errorCode: errorDetails.code,
+        errorCause: errorDetails.cause,
+        hint: "This usually means the server cannot reach ADFS. Check: 1) ADFS URL is correct, 2) Server has network access to ADFS, 3) SSL certificates",
       }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     )
