@@ -479,7 +479,7 @@ function SSOContent() {
                 </div>
               )}
               
-              {debugInfo.responseData && (
+              {debugInfo.responseData !== undefined && (
                 <div>
                   <h3 className="text-xs font-medium text-muted-foreground mb-1">Response Data</h3>
                   <pre className="text-xs bg-accent/30 p-2 rounded overflow-auto max-h-64">
