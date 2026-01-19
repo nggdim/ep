@@ -69,7 +69,7 @@ interface DebugInfo {
   mode?: "server" | "client"
 }
 
-type ExchangeMode = "server" | "client"
+type ExchangeMode = "server" | "client" | "no-cors"
 
 function SSOContent() {
   const searchParams = useSearchParams()
@@ -135,7 +135,9 @@ function SSOContent() {
     })
     
     if (mode === "client") {
-      await exchangeCodeClient(code, credentials)
+      await exchangeCodeClient(code, credentials, false)
+    } else if (mode === "no-cors") {
+      await exchangeCodeClient(code, credentials, true)
     } else {
       await exchangeCodeServer(code, credentials)
     }
@@ -192,7 +194,7 @@ function SSOContent() {
   }
 
   // Client-side token exchange (direct to ADFS from browser)
-  const exchangeCodeClient = async (code: string, credentials: ADFSCredentials) => {
+  const exchangeCodeClient = async (code: string, credentials: ADFSCredentials, noCors = false) => {
     const tokenUrl = `${credentials.serverUrl}/adfs/oauth2/token`
     
     // Build form data (ADFS expects application/x-www-form-urlencoded)
@@ -215,16 +217,40 @@ function SSOContent() {
       client_secret: "***hidden***",
       redirect_uri: credentials.redirectUri,
       scope: credentials.scope,
+      mode: noCors ? "no-cors" : "cors",
     }
     
     try {
-      const response = await fetch(tokenUrl, {
+      const fetchOptions: RequestInit = {
         method: "POST",
         headers: { 
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: params.toString(),
-      })
+      }
+      
+      if (noCors) {
+        fetchOptions.mode = "no-cors"
+      }
+      
+      const response = await fetch(tokenUrl, fetchOptions)
+      
+      // no-cors mode returns opaque response - we can't read it
+      if (noCors) {
+        setDebugInfo(prev => ({
+          ...prev,
+          requestBody,
+          responseStatus: 0,
+          responseData: { 
+            message: "no-cors mode: Request was sent but response is opaque (unreadable)",
+            type: response.type,
+            hint: "This proves the request reached ADFS. To get the token, you need CORS enabled on ADFS or server-side access.",
+          },
+        }))
+        setStatus("error")
+        setErrorMessage("no-cors test successful - request reached ADFS but response is opaque (browser security). Enable CORS on ADFS or fix server network access.")
+        return
+      }
 
       const responseText = await response.text()
       let data: Record<string, unknown>
@@ -508,28 +534,36 @@ function SSOContent() {
               {retryCode && retryCredentials && (
                 <div className="p-4 rounded-lg bg-accent/30 border">
                   <p className="text-sm font-medium mb-2">Try a different exchange mode:</p>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button
-                      variant={exchangeMode === "server" ? "outline" : "default"}
-                      size="sm"
-                      onClick={() => handleRetry("client")}
-                      disabled={exchangeMode === "client"}
-                    >
-                      Client-side (direct to ADFS)
-                    </Button>
-                    <Button
-                      variant={exchangeMode === "client" ? "outline" : "default"}
+                      variant={exchangeMode === "server" ? "secondary" : "default"}
                       size="sm"
                       onClick={() => handleRetry("server")}
                       disabled={exchangeMode === "server"}
                     >
-                      Server-side (via API)
+                      Server-side
+                    </Button>
+                    <Button
+                      variant={exchangeMode === "client" ? "secondary" : "default"}
+                      size="sm"
+                      onClick={() => handleRetry("client")}
+                      disabled={exchangeMode === "client"}
+                    >
+                      Client-side
+                    </Button>
+                    <Button
+                      variant={exchangeMode === "no-cors" ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => handleRetry("no-cors")}
+                      disabled={exchangeMode === "no-cors"}
+                    >
+                      No-CORS Test
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
-                    {exchangeMode === "server" 
-                      ? "Server mode failed. Try client mode (requires ADFS CORS support)."
-                      : "Client mode failed. Try server mode (requires server network access to ADFS)."}
+                    {exchangeMode === "server" && "Server mode failed - server may not have network access to ADFS."}
+                    {exchangeMode === "client" && "Client mode failed - ADFS may not allow CORS."}
+                    {exchangeMode === "no-cors" && "No-CORS proves connectivity but can't read the response."}
                   </p>
                 </div>
               )}
