@@ -67,10 +67,10 @@ interface DebugInfo {
   requestBody?: Record<string, unknown>
   responseStatus?: number
   responseData?: unknown
-  mode?: "server" | "client" | "no-cors" | "form" | "form-popup"
+  mode?: "server" | "client" | "no-cors" | "form" | "form-popup" | "popup-auto"
 }
 
-type ExchangeMode = "server" | "client" | "no-cors" | "form" | "form-popup"
+type ExchangeMode = "server" | "client" | "no-cors" | "form" | "form-popup" | "popup-auto"
 
 function SSOContent() {
   const searchParams = useSearchParams()
@@ -80,7 +80,7 @@ function SSOContent() {
   const [errorMessage, setErrorMessage] = useState<string>("")
   const [copied, setCopied] = useState(false)
   const [debugInfo, setDebugInfo] = useState<DebugInfo>({})
-  const [exchangeMode, setExchangeMode] = useState<ExchangeMode>("server")
+  const [exchangeMode, setExchangeMode] = useState<ExchangeMode>("popup-auto")
   const [retryCode, setRetryCode] = useState<string | null>(null)
   const [retryCredentials, setRetryCredentials] = useState<ADFSCredentials | null>(null)
   const [manualTokenJson, setManualTokenJson] = useState("")
@@ -284,6 +284,8 @@ function SSOContent() {
       exchangeCodeForm(code, credentials, false) // Same window
     } else if (mode === "form-popup") {
       exchangeCodeForm(code, credentials, true) // Popup
+    } else if (mode === "popup-auto") {
+      exchangeCodePopupAuto(code) // Auto popup via our exchange page
     } else {
       await exchangeCodeServer(code, credentials)
     }
@@ -502,6 +504,32 @@ function SSOContent() {
       setErrorMessage("")
     }
     // If same window, page will navigate away - no state to set
+  }
+
+  // Automatic popup exchange - opens our exchange page which calls server API
+  const exchangeCodePopupAuto = (code: string) => {
+    setDebugInfo(prev => ({
+      ...prev,
+      mode: "popup-auto",
+      requestBody: { code: code.substring(0, 20) + "...", method: "Server-side via popup" },
+      responseData: { message: "Opening popup to exchange code via server..." },
+    }))
+    
+    // Open our exchange page in a popup - it will call our server API
+    // and postMessage the result back
+    const exchangeUrl = `/sso/exchange?code=${encodeURIComponent(code)}`
+    const popup = window.open(exchangeUrl, "adfs_exchange_popup", "width=500,height=400,menubar=no,toolbar=no")
+    
+    if (popup) {
+      setWaitingForPopup(true)
+      setStatus("exchanging")
+      setErrorMessage("")
+      
+      // The popup will postMessage back when done - handled by the existing message listener
+    } else {
+      setStatus("error")
+      setErrorMessage("Failed to open popup. Please allow popups for this site.")
+    }
   }
   
   // Generate bookmarklet code - stores in sessionStorage and redirects back
@@ -913,6 +941,14 @@ function SSOContent() {
                     >
                       Form (popup)
                     </Button>
+                    <Button
+                      variant={exchangeMode === "popup-auto" ? "secondary" : "default"}
+                      size="sm"
+                      onClick={() => handleRetry("popup-auto")}
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      ✨ Auto Popup
+                    </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
                     {exchangeMode === "server" && "Server mode failed - server may not have network access to ADFS."}
@@ -920,6 +956,7 @@ function SSOContent() {
                     {exchangeMode === "no-cors" && "No-CORS proves connectivity but can't read the response."}
                     {exchangeMode === "form" && "Form POST in same window - use bookmarklet to return with token."}
                     {exchangeMode === "form-popup" && "Form POST in popup - use bookmarklet to send token back."}
+                    {exchangeMode === "popup-auto" && "✅ Auto Popup - exchanges via server in popup, auto-returns result!"}
                   </p>
                   
                   {/* Instructions for Form POST modes */}
