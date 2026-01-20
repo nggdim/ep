@@ -62,13 +62,23 @@ function SSOContent() {
   const [decodedToken, setDecodedToken] = useState<DecodedToken | null>(null)
   const [errorMessage, setErrorMessage] = useState<string>("")
   const [copied, setCopied] = useState(false)
+  const [debugLog, setDebugLog] = useState<string[]>([])
+
+  const addLog = (msg: string) => {
+    console.log("[SSO]", msg)
+    setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`])
+  }
 
   useEffect(() => {
+    addLog(`Page loaded. URL: ${window.location.href}`)
+    addLog(`Query string: ${window.location.search || "(empty)"}`)
+    
     // Check for error from ADFS
     const error = searchParams.get("error")
     const errorDescription = searchParams.get("error_description")
 
     if (error) {
+      addLog(`ADFS returned error: ${error} - ${errorDescription}`)
       setStatus("error")
       setErrorMessage(errorDescription || error)
       return
@@ -76,19 +86,24 @@ function SSOContent() {
 
     // Check for authorization code
     const code = searchParams.get("code")
+    addLog(`Code parameter: ${code ? code.substring(0, 20) + "..." : "(none)"}`)
 
     if (!code) {
+      addLog("No code found - showing waiting screen")
       setStatus("no-code")
       return
     }
 
     // Get ADFS credentials from localStorage
     const credentials = getADFSCredentials()
+    addLog(`Credentials from localStorage: ${credentials ? "found" : "NOT FOUND"}`)
+    
     if (!credentials) {
       setStatus("no-credentials")
       return
     }
 
+    addLog(`Starting token exchange with server: ${credentials.serverUrl}`)
     // Exchange the code for a token
     exchangeCode(code, credentials)
   }, [searchParams])
@@ -102,31 +117,39 @@ function SSOContent() {
     resource?: string
   }) => {
     setStatus("exchanging")
+    addLog("Calling /api/adfs/token...")
     
     try {
+      const requestBody = {
+        code,
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret,
+        serverUrl: credentials.serverUrl,
+        redirectUri: credentials.redirectUri,
+        scope: credentials.scope,
+        resource: credentials.resource,
+      }
+      addLog(`Request body: ${JSON.stringify({ ...requestBody, clientSecret: "***", code: code.substring(0, 20) + "..." })}`)
+      
       const response = await fetch("/api/adfs/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code,
-          clientId: credentials.clientId,
-          clientSecret: credentials.clientSecret,
-          serverUrl: credentials.serverUrl,
-          redirectUri: credentials.redirectUri,
-          scope: credentials.scope,
-          resource: credentials.resource,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
+      addLog(`Response status: ${response.status}`)
       const data = await response.json()
+      addLog(`Response data: ${JSON.stringify(data).substring(0, 200)}...`)
 
       if (!response.ok || data.error) {
+        addLog(`ERROR: ${data.error || data.error_description || "Unknown error"}`)
         setStatus("error")
         setErrorMessage(data.error_description || data.error || data.details || "Failed to exchange code")
         setTokenResponse(data)
         return
       }
 
+      addLog("SUCCESS! Token received")
       setTokenResponse(data)
       
       // Try to decode the access token if it's a JWT
@@ -140,8 +163,10 @@ function SSOContent() {
       // Clean up URL - remove the code parameter
       window.history.replaceState(null, "", window.location.pathname)
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Failed to exchange code"
+      addLog(`EXCEPTION: ${errorMsg}`)
       setStatus("error")
-      setErrorMessage(err instanceof Error ? err.message : "Failed to exchange code")
+      setErrorMessage(errorMsg)
     }
   }
 
@@ -371,6 +396,22 @@ function SSOContent() {
             </div>
           )}
 
+          {/* Exchanging - show progress */}
+          {status === "exchanging" && (
+            <div className="p-6">
+              {debugLog.length > 0 && (
+                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                  <p className="text-xs font-medium mb-2">Activity Log:</p>
+                  <div className="text-xs font-mono space-y-0.5 max-h-40 overflow-auto">
+                    {debugLog.map((log, i) => (
+                      <div key={i} className="text-muted-foreground">{log}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Error with Retry */}
           {status === "error" && (
             <div className="p-6 space-y-4">
@@ -378,6 +419,18 @@ function SSOContent() {
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Retry
               </Button>
+              
+              {/* Debug Log */}
+              {debugLog.length > 0 && (
+                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                  <p className="text-xs font-medium mb-2">Activity Log:</p>
+                  <div className="text-xs font-mono space-y-0.5 max-h-40 overflow-auto">
+                    {debugLog.map((log, i) => (
+                      <div key={i} className="text-muted-foreground">{log}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
               
               {tokenResponse && (
                 <details>
@@ -394,7 +447,7 @@ function SSOContent() {
 
           {/* Instructions */}
           {(status === "no-code" || status === "no-credentials") && (
-            <div className="p-6">
+            <div className="p-6 space-y-4">
               <div className="text-sm text-muted-foreground space-y-2">
                 {status === "no-code" && (
                   <>
@@ -415,6 +468,41 @@ function SSOContent() {
                   </>
                 )}
               </div>
+              
+              {/* Debug: Show current URL */}
+              <div className="p-3 rounded-lg bg-accent/30 border">
+                <p className="text-xs font-medium mb-2">Debug Info:</p>
+                <div className="text-xs space-y-1 font-mono">
+                  <div>
+                    <span className="text-muted-foreground">URL: </span>
+                    <code className="break-all">{typeof window !== "undefined" ? window.location.href : "N/A"}</code>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Query: </span>
+                    <code>{typeof window !== "undefined" ? (window.location.search || "(none)") : "N/A"}</code>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Code param: </span>
+                    <code>{searchParams.get("code") || "(none)"}</code>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Error param: </span>
+                    <code>{searchParams.get("error") || "(none)"}</code>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Debug Log */}
+              {debugLog.length > 0 && (
+                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                  <p className="text-xs font-medium mb-2">Activity Log:</p>
+                  <div className="text-xs font-mono space-y-0.5 max-h-40 overflow-auto">
+                    {debugLog.map((log, i) => (
+                      <div key={i} className="text-muted-foreground">{log}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

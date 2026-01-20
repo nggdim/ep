@@ -356,6 +356,8 @@ export function AdfsTester({ onResult }: Props) {
     
     // Redirect to ADFS
     const authUrl = buildAuthorizationUrl()
+    console.log("[ADFS] Redirecting to:", authUrl)
+    console.log("[ADFS] Credentials saved:", { ...credentials, clientSecret: "***" })
     window.location.href = authUrl
   }
 
