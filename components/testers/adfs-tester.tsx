@@ -6,15 +6,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
-import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, ExternalLink, Server, Globe, Wifi } from "lucide-react"
+import { Loader2, Play, Eye, EyeOff, Shield, Settings2, Save, Server, Globe } from "lucide-react"
 import { getADFSCredentials, saveADFSCredentials, ADFSCredentials } from "@/lib/credential-store"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
 }
-
-type TokenExchangeMode = "server" | "client"
-type ResponseType = "code" | "token" | "id_token" | "id_token token"
 
 export function AdfsTester({ onResult }: Props) {
   const [serverUrl, setServerUrl] = useState("")
@@ -23,8 +20,6 @@ export function AdfsTester({ onResult }: Props) {
   const [redirectUri, setRedirectUri] = useState("")
   const [resource, setResource] = useState("")
   const [scope, setScope] = useState("openid")
-  const [tokenExchangeMode, setTokenExchangeMode] = useState<TokenExchangeMode>("server")
-  const [responseType, setResponseType] = useState<ResponseType>("token")  // Default to implicit for easier testing
   const [showSecret, setShowSecret] = useState(false)
   const [generatedUrl, setGeneratedUrl] = useState("")
   const [saving, setSaving] = useState(false)
@@ -46,8 +41,6 @@ export function AdfsTester({ onResult }: Props) {
       setRedirectUri(stored.redirectUri)
       setScope(stored.scope || "openid")
       setResource(stored.resource || "")
-      setTokenExchangeMode(stored.tokenExchangeMode || "server")
-      setResponseType(stored.responseType || "token")  // Default to implicit flow
       setHasStoredCredentials(true)
     } else {
       // Default redirect URI
@@ -115,8 +108,6 @@ export function AdfsTester({ onResult }: Props) {
           issuer: data.issuer,
           authorization_endpoint: data.authorization_endpoint,
           token_endpoint: data.token_endpoint,
-          scopes_supported: data.scopes_supported,
-          response_types_supported: data.response_types_supported,
         },
       }
       setResult(successResult)
@@ -175,7 +166,6 @@ export function AdfsTester({ onResult }: Props) {
           details: {
             mode: "client-side (browser)",
             status: response.status,
-            response: responseText.substring(0, 200),
           },
         }
         setResult(errorResult)
@@ -192,10 +182,7 @@ export function AdfsTester({ onResult }: Props) {
           connectionString: serverUrl,
           status: "error" as const,
           message: "[Client] Invalid JSON response",
-          details: {
-            mode: "client-side (browser)",
-            response: responseText.substring(0, 200),
-          },
+          details: { mode: "client-side (browser)" },
         }
         setResult(errorResult)
         onResult(errorResult)
@@ -208,20 +195,16 @@ export function AdfsTester({ onResult }: Props) {
         type: "api" as const,
         connectionString: serverUrl,
         status: "success" as const,
-        message: "✅ [Client] Successfully connected to ADFS (no CORS issues!)",
+        message: "✅ [Client] Successfully connected to ADFS",
         details: {
           mode: "client-side (browser)",
           issuer: data.issuer,
-          authorization_endpoint: data.authorization_endpoint,
           token_endpoint: data.token_endpoint,
-          scopes_supported: data.scopes_supported,
-          response_types_supported: data.response_types_supported,
         },
       }
       setResult(successResult)
       onResult(successResult)
     } catch (err) {
-      // Most likely CORS error
       const errorResult = {
         type: "api" as const,
         connectionString: serverUrl,
@@ -229,8 +212,7 @@ export function AdfsTester({ onResult }: Props) {
         message: `[Client] ${err instanceof Error ? err.message : "Network/CORS error"}`,
         details: {
           mode: "client-side (browser)",
-          hint: "This is likely a CORS error - ADFS may not allow browser requests. Try the Server test instead.",
-          url: metadataUrl,
+          hint: "CORS error - ADFS may not allow browser requests. Use Server test.",
         },
       }
       setResult(errorResult)
@@ -255,9 +237,8 @@ export function AdfsTester({ onResult }: Props) {
       return { valid: false, message: "Client ID is required" }
     }
 
-    // Client secret is required for authorization code flow, optional for implicit
-    if (responseType === "code" && !clientSecret.trim()) {
-      return { valid: false, message: "Client Secret is required for Authorization Code flow" }
+    if (!clientSecret.trim()) {
+      return { valid: false, message: "Client Secret is required" }
     }
 
     if (!redirectUri.trim()) {
@@ -296,8 +277,6 @@ export function AdfsTester({ onResult }: Props) {
       redirectUri: redirectUri.trim(),
       scope: scope.trim() || undefined,
       resource: resource.trim() || undefined,
-      tokenExchangeMode,
-      responseType,  // "code" or "token" (implicit)
     }
     
     saveADFSCredentials(credentials)
@@ -311,12 +290,11 @@ export function AdfsTester({ onResult }: Props) {
       type: "api" as const,
       connectionString: serverUrl,
       status: "success" as const,
-      message: "ADFS credentials saved to localStorage",
+      message: "ADFS credentials saved",
       details: {
         serverUrl: credentials.serverUrl,
         clientId: credentials.clientId,
         redirectUri: credentials.redirectUri,
-        resource: resource || "(none)",
       },
     }
     setResult(successResult)
@@ -326,7 +304,7 @@ export function AdfsTester({ onResult }: Props) {
   const buildAuthorizationUrl = (): string => {
     const baseUrl = serverUrl.trim().replace(/\/+$/, "")
     const params = new URLSearchParams({
-      response_type: responseType,  // "code" for auth code flow, "token" for implicit flow
+      response_type: "code",
       client_id: clientId.trim(),
       redirect_uri: redirectUri.trim(),
     })
@@ -349,7 +327,7 @@ export function AdfsTester({ onResult }: Props) {
     } else {
       setGeneratedUrl("")
     }
-  }, [serverUrl, clientId, redirectUri, scope, resource, responseType])
+  }, [serverUrl, clientId, redirectUri, scope, resource])
 
   const handleStartOAuthFlow = () => {
     const validation = validateInputs()
@@ -364,50 +342,28 @@ export function AdfsTester({ onResult }: Props) {
       onResult(errorResult)
       return
     }
-
-    // Clear any stale SSO state for a clean slate
-    sessionStorage.removeItem("adfs_token_response")
-    sessionStorage.removeItem("adfs_form_post_pending")
     
-    // Save credentials first
-    handleSaveCredentials()
+    // Save credentials first (needed by /sso to exchange the code)
+    const credentials: ADFSCredentials = {
+      serverUrl: serverUrl.trim().replace(/\/+$/, ""),
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+      redirectUri: redirectUri.trim(),
+      scope: scope.trim() || undefined,
+      resource: resource.trim() || undefined,
+    }
+    saveADFSCredentials(credentials)
     
-    // Open authorization URL
+    // Redirect to ADFS
     const authUrl = buildAuthorizationUrl()
     window.location.href = authUrl
-  }
-
-  const handleOpenInNewTab = () => {
-    const validation = validateInputs()
-    if (!validation.valid) {
-      const errorResult = {
-        type: "api" as const,
-        connectionString: serverUrl,
-        status: "error" as const,
-        message: validation.message,
-      }
-      setResult(errorResult)
-      onResult(errorResult)
-      return
-    }
-
-    // Clear any stale SSO state for a clean slate
-    sessionStorage.removeItem("adfs_token_response")
-    sessionStorage.removeItem("adfs_form_post_pending")
-    
-    // Save credentials first
-    handleSaveCredentials()
-    
-    // Open authorization URL in new tab
-    const authUrl = buildAuthorizationUrl()
-    window.open(authUrl, "_blank")
   }
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 mb-2">
         <Shield className="h-4 w-4 text-blue-500" />
-        <Label className="text-sm text-muted-foreground">ADFS OAuth2 Configuration</Label>
+        <Label className="text-sm text-muted-foreground">ADFS OAuth2 (Authorization Code)</Label>
         {hasStoredCredentials && (
           <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
             <Settings2 className="h-3 w-3" />
@@ -416,7 +372,7 @@ export function AdfsTester({ onResult }: Props) {
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        Configure ADFS credentials for OAuth2 authentication. After saving, use the OAuth flow to test authentication.
+        Redirects to ADFS → login → returns code → server exchanges for token automatically.
       </p>
 
       <div className="border-t border-border pt-4">
@@ -465,9 +421,6 @@ export function AdfsTester({ onResult }: Props) {
                 Test Client
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-1.5">
-              <strong>Server:</strong> Tests via our API server. <strong>Client:</strong> Tests directly from browser (may fail due to CORS).
-            </p>
           </div>
 
           {/* Client ID */}
@@ -482,9 +435,6 @@ export function AdfsTester({ onResult }: Props) {
               onChange={(e) => setClientId(e.target.value)}
               className="bg-input font-mono text-sm"
             />
-            <p className="text-xs text-muted-foreground mt-1">
-              The Client Identifier registered with ADFS
-            </p>
           </div>
 
           {/* Client Secret */}
@@ -530,65 +480,14 @@ export function AdfsTester({ onResult }: Props) {
               className="bg-input font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              Must match the redirect URI registered with ADFS
-            </p>
-          </div>
-
-          {/* Response Type */}
-          <div>
-            <Label className="text-sm text-muted-foreground mb-1.5 block">
-              Response Type (OAuth Flow)
-            </Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant={responseType === "code" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setResponseType("code")}
-              >
-                <Server className="h-3.5 w-3.5 mr-1.5" />
-                code
-              </Button>
-              <Button
-                type="button"
-                variant={responseType === "token" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setResponseType("token")}
-              >
-                <Play className="h-3.5 w-3.5 mr-1.5" />
-                token
-              </Button>
-              <Button
-                type="button"
-                variant={responseType === "id_token" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setResponseType("id_token")}
-              >
-                <Shield className="h-3.5 w-3.5 mr-1.5" />
-                id_token
-              </Button>
-              <Button
-                type="button"
-                variant={responseType === "id_token token" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setResponseType("id_token token")}
-              >
-                <Shield className="h-3.5 w-3.5 mr-1.5" />
-                id_token token
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {responseType === "code" && "Auth Code: Returns code, then exchange for token (requires server/manual step)"}
-              {responseType === "token" && "✅ Implicit: Access token returned directly in URL - automatic!"}
-              {responseType === "id_token" && "✅ Implicit: ID token (JWT) returned directly in URL - automatic!"}
-              {responseType === "id_token token" && "✅ Implicit: Both ID token and access token in URL - automatic!"}
+              Must be registered in ADFS. Token exchange happens automatically on redirect.
             </p>
           </div>
 
           {/* Scope */}
           <div>
             <Label htmlFor="scope" className="text-sm text-muted-foreground mb-1.5 block">
-              Scope (optional)
+              Scope
             </Label>
             <Input
               id="scope"
@@ -597,9 +496,6 @@ export function AdfsTester({ onResult }: Props) {
               onChange={(e) => setScope(e.target.value)}
               className="bg-input font-mono text-sm"
             />
-            <p className="text-xs text-muted-foreground mt-1">
-              OAuth scopes (e.g., openid, profile, email). Leave empty if not needed.
-            </p>
           </div>
 
           {/* Resource (optional) */}
@@ -614,16 +510,13 @@ export function AdfsTester({ onResult }: Props) {
               onChange={(e) => setResource(e.target.value)}
               className="bg-input font-mono text-sm"
             />
-            <p className="text-xs text-muted-foreground mt-1">
-              The relying party identifier (if required by your ADFS configuration)
-            </p>
           </div>
 
           {/* Generated URL Preview */}
           {generatedUrl && (
             <div>
               <Label className="text-sm text-muted-foreground mb-1.5 block">
-                Authorization URL Preview
+                Authorization URL
               </Label>
               <div className="p-2 rounded bg-accent/30 border border-border/50">
                 <code className="text-xs break-all font-mono text-muted-foreground">
@@ -650,29 +543,16 @@ export function AdfsTester({ onResult }: Props) {
           ) : (
             <Save className="h-4 w-4 mr-2" />
           )}
-          {saved ? "Saved!" : "Save Credentials"}
+          {saved ? "Saved!" : "Save"}
         </Button>
-      </div>
-
-      <div className="flex gap-2">
         <Button 
-          onClick={handleStartOAuthFlow} 
+          onClick={handleStartOAuthFlow}
           className="flex-1"
         >
           <Play className="h-4 w-4 mr-2" />
-          Start OAuth Flow
-        </Button>
-        <Button 
-          onClick={handleOpenInNewTab} 
-          variant="outline"
-        >
-          <ExternalLink className="h-4 w-4" />
+          Get Access Token
         </Button>
       </div>
-
-      <p className="text-xs text-muted-foreground text-center">
-        Clicking &quot;Start OAuth Flow&quot; will redirect you to ADFS for authentication
-      </p>
 
       {/* Result */}
       {result && <ResultDisplay result={result} />}
@@ -686,7 +566,7 @@ export function AdfsTester({ onResult }: Props) {
             ) : (
               <Globe className="h-3.5 w-3.5 text-green-500" />
             )}
-            ADFS Metadata {lastTestMode === "server" ? "(via Server)" : "(via Client)"}
+            ADFS Metadata
           </p>
           <div className="text-xs space-y-1.5">
             {"issuer" in metadata && metadata.issuer != null && (
@@ -699,22 +579,6 @@ export function AdfsTester({ onResult }: Props) {
               <div>
                 <span className="text-muted-foreground">Token Endpoint: </span>
                 <code className="bg-background px-1 py-0.5 rounded text-[10px] break-all">{String(metadata.token_endpoint)}</code>
-              </div>
-            )}
-            {Array.isArray(metadata.response_types_supported) && (
-              <div>
-                <span className="text-muted-foreground">Response Types: </span>
-                <code className="bg-background px-1 py-0.5 rounded text-[10px]">
-                  {(metadata.response_types_supported as string[]).join(", ")}
-                </code>
-              </div>
-            )}
-            {Array.isArray(metadata.scopes_supported) && (
-              <div>
-                <span className="text-muted-foreground">Scopes: </span>
-                <code className="bg-background px-1 py-0.5 rounded text-[10px]">
-                  {(metadata.scopes_supported as string[]).join(", ")}
-                </code>
               </div>
             )}
           </div>
