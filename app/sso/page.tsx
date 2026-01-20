@@ -63,13 +63,39 @@ function SSOContent() {
   const [errorMessage, setErrorMessage] = useState<string>("")
   const [copied, setCopied] = useState(false)
   const [debugLog, setDebugLog] = useState<string[]>([])
+  const [hasProcessed, setHasProcessed] = useState(false)
 
   const addLog = (msg: string) => {
     console.log("[SSO]", msg)
     setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`])
   }
 
+  // Check for stored token on mount
   useEffect(() => {
+    const storedToken = sessionStorage.getItem("adfs_access_token")
+    if (storedToken) {
+      try {
+        const data = JSON.parse(storedToken)
+        addLog("Found stored token in sessionStorage")
+        setTokenResponse(data)
+        if (data.access_token) {
+          const decoded = decodeJWT(data.access_token)
+          setDecodedToken(decoded)
+        }
+        setStatus("success")
+        setHasProcessed(true)
+      } catch {
+        sessionStorage.removeItem("adfs_access_token")
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    // Skip if already processed or already have a token
+    if (hasProcessed || status === "success") {
+      return
+    }
+    
     addLog(`Page loaded. URL: ${window.location.href}`)
     addLog(`Query string: ${window.location.search || "(empty)"}`)
     
@@ -81,6 +107,7 @@ function SSOContent() {
       addLog(`ADFS returned error: ${error} - ${errorDescription}`)
       setStatus("error")
       setErrorMessage(errorDescription || error)
+      setHasProcessed(true)
       return
     }
 
@@ -100,13 +127,15 @@ function SSOContent() {
     
     if (!credentials) {
       setStatus("no-credentials")
+      setHasProcessed(true)
       return
     }
 
+    setHasProcessed(true)
     addLog(`Starting token exchange with server: ${credentials.serverUrl}`)
     // Exchange the code for a token
     exchangeCode(code, credentials)
-  }, [searchParams])
+  }, [searchParams, hasProcessed, status])
 
   const exchangeCode = async (code: string, credentials: { 
     serverUrl: string
@@ -152,6 +181,10 @@ function SSOContent() {
       addLog("SUCCESS! Token received")
       setTokenResponse(data)
       
+      // Store token in sessionStorage (persists until browser tab is closed)
+      sessionStorage.setItem("adfs_access_token", JSON.stringify(data))
+      addLog("Token stored in sessionStorage")
+      
       // Try to decode the access token if it's a JWT
       if (data.access_token) {
         const decoded = decodeJWT(data.access_token)
@@ -183,6 +216,7 @@ function SSOContent() {
     setTokenResponse(null)
     setDecodedToken(null)
     setErrorMessage("")
+    setHasProcessed(false)
     
     const code = searchParams.get("code")
     const credentials = getADFSCredentials()
@@ -192,6 +226,16 @@ function SSOContent() {
     } else {
       setStatus(code ? "no-credentials" : "no-code")
     }
+  }
+
+  const handleClearToken = () => {
+    sessionStorage.removeItem("adfs_access_token")
+    setTokenResponse(null)
+    setDecodedToken(null)
+    setStatus("no-code")
+    setHasProcessed(false)
+    setDebugLog([])
+    addLog("Token cleared from sessionStorage")
   }
 
   return (
@@ -265,6 +309,14 @@ function SSOContent() {
           {/* Token Details */}
           {status === "success" && tokenResponse && (
             <div className="p-6 space-y-6">
+              {/* Actions */}
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={handleClearToken}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Clear & Start Over
+                </Button>
+              </div>
+              
               {/* Quick Info */}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <div className="p-3 rounded-lg bg-accent/50">
