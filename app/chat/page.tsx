@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
 import { TextStreamChatTransport } from "ai"
 import { useRouter } from "next/navigation"
+import packageJson from "../../package.json"
 
 // shadcn sidebar
 import {
@@ -215,6 +216,7 @@ const SUGGESTIONS = [
 
 export default function ChatPage() {
   const router = useRouter()
+  const releaseVersion = `v${packageJson.version}`
 
   // ── Credentials ──
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
@@ -550,6 +552,9 @@ export default function ChatPage() {
                 ? conversations.find((c) => c.id === activeConversationId)?.title || "Chat"
                 : "New chat"
               }
+            </span>
+            <span className="hidden sm:inline-flex items-center rounded-full border border-border/60 bg-accent/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {releaseVersion}
             </span>
             <ThemeToggle />
           </header>
