@@ -47,6 +47,27 @@ export interface LinkedTable {
 }
 
 /**
+ * Chat conversation - a single chat thread
+ */
+export interface ChatConversation {
+  id: string
+  title: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+/**
+ * Chat message - a single message within a conversation
+ */
+export interface ChatMessage {
+  id: string
+  conversationId: string
+  role: "user" | "assistant"
+  content: string
+  createdAt: Date
+}
+
+/**
  * Dexie database instance for workspace notes
  */
 class WorkspaceDatabase extends Dexie {
@@ -54,6 +75,8 @@ class WorkspaceDatabase extends Dexie {
   tableNotes!: EntityTable<TableNote, "id">
   columnNotes!: EntityTable<ColumnNote, "id">
   linkedTables!: EntityTable<LinkedTable, "id">
+  chatConversations!: EntityTable<ChatConversation, "id">
+  chatMessages!: EntityTable<ChatMessage, "id">
 
   constructor() {
     super("ep-workspace-notes")
@@ -71,6 +94,16 @@ class WorkspaceDatabase extends Dexie {
       tableNotes: "id, workspaceId, tablePath, [workspaceId+tablePath], createdAt, updatedAt",
       columnNotes: "id, tableNoteId, columnName, [tableNoteId+columnName], createdAt, updatedAt",
       linkedTables: "id, workspaceId, tablePath, [workspaceId+tablePath], addedAt",
+    })
+
+    // Version 3: Add chat conversations and messages
+    this.version(3).stores({
+      workspaces: "id, name, createdAt, updatedAt",
+      tableNotes: "id, workspaceId, tablePath, [workspaceId+tablePath], createdAt, updatedAt",
+      columnNotes: "id, tableNoteId, columnName, [tableNoteId+columnName], createdAt, updatedAt",
+      linkedTables: "id, workspaceId, tablePath, [workspaceId+tablePath], addedAt",
+      chatConversations: "id, title, createdAt, updatedAt",
+      chatMessages: "id, conversationId, role, createdAt",
     })
   }
 }
@@ -419,4 +452,107 @@ export async function getLinkedTablesWithNotes(workspaceId: string): Promise<{
   )
   
   return { linkedTables: linkedTablesWithNotes }
+}
+
+// ============================================================================
+// Chat Conversation Functions
+// ============================================================================
+
+/**
+ * Create a new chat conversation
+ */
+export async function createChatConversation(title: string = "New Chat"): Promise<ChatConversation> {
+  const now = new Date()
+  const conversation: ChatConversation = {
+    id: generateId(),
+    title,
+    createdAt: now,
+    updatedAt: now,
+  }
+  await db.chatConversations.add(conversation)
+  return conversation
+}
+
+/**
+ * Update a chat conversation's title or updatedAt
+ */
+export async function updateChatConversation(
+  id: string,
+  updates: Partial<Pick<ChatConversation, "title">>
+): Promise<void> {
+  await db.chatConversations.update(id, {
+    ...updates,
+    updatedAt: new Date(),
+  })
+}
+
+/**
+ * Delete a chat conversation and all its messages
+ */
+export async function deleteChatConversation(id: string): Promise<void> {
+  await db.transaction("rw", [db.chatConversations, db.chatMessages], async () => {
+    await db.chatMessages.where("conversationId").equals(id).delete()
+    await db.chatConversations.delete(id)
+  })
+}
+
+/**
+ * Add a message to a conversation and touch the conversation's updatedAt
+ */
+export async function addChatMessage(
+  conversationId: string,
+  role: "user" | "assistant",
+  content: string
+): Promise<ChatMessage> {
+  const msg: ChatMessage = {
+    id: generateId(),
+    conversationId,
+    role,
+    content,
+    createdAt: new Date(),
+  }
+  await db.transaction("rw", [db.chatMessages, db.chatConversations], async () => {
+    await db.chatMessages.add(msg)
+    await db.chatConversations.update(conversationId, { updatedAt: new Date() })
+  })
+  return msg
+}
+
+/**
+ * Get all messages for a conversation, ordered by creation time
+ */
+export async function getChatMessages(conversationId: string): Promise<ChatMessage[]> {
+  return db.chatMessages.where("conversationId").equals(conversationId).sortBy("createdAt")
+}
+
+/**
+ * Replace all messages for a conversation (used when syncing from useChat)
+ */
+export async function syncChatMessages(
+  conversationId: string,
+  messages: { role: "user" | "assistant"; content: string }[]
+): Promise<void> {
+  await db.transaction("rw", [db.chatMessages, db.chatConversations], async () => {
+    await db.chatMessages.where("conversationId").equals(conversationId).delete()
+    const now = new Date()
+    const records: ChatMessage[] = messages.map((m, i) => ({
+      id: generateId(),
+      conversationId,
+      role: m.role,
+      content: m.content,
+      createdAt: new Date(now.getTime() + i), // ensure ordering
+    }))
+    await db.chatMessages.bulkAdd(records)
+    await db.chatConversations.update(conversationId, { updatedAt: new Date() })
+  })
+}
+
+/**
+ * Delete all chat conversations and messages
+ */
+export async function clearAllChatConversations(): Promise<void> {
+  await db.transaction("rw", [db.chatConversations, db.chatMessages], async () => {
+    await db.chatMessages.clear()
+    await db.chatConversations.clear()
+  })
 }
