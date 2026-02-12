@@ -251,6 +251,7 @@ export default function ChatPage() {
   const [renameValue, setRenameValue] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false)
 
   // ── Transport ──
   const transport = useMemo(() => {
@@ -266,15 +267,11 @@ export default function ChatPage() {
     })
   }, [credentials])
 
-  const chatId = useMemo(() => {
-    return activeConversationId
-      ? `chatbot-conv-${activeConversationId}`
-      : "chatbot-new"
-  }, [activeConversationId])
-
-  const { messages, setMessages, sendMessage, regenerate, status, error, stop } =
+  // Keep a stable chat id so in-flight requests are not reset
+  // when activeConversationId changes (e.g., first message creates a chat).
+  const { messages, setMessages, sendMessage, regenerate, status, error } =
     useChat({
-      id: chatId,
+      id: "chatbot-main",
       transport,
       onError: (err) => console.error("[ChatPage] Error:", err.message),
     })
@@ -305,6 +302,7 @@ export default function ChatPage() {
 
   // ── Load messages when switching conversations ──
   const loadConversation = useCallback(async (conversationId: string) => {
+    setIsCreatingConversation(false)
     setActiveConversationId(conversationId)
     prevMessagesLenRef.current = 0
     const stored = await getChatMessages(conversationId)
@@ -325,31 +323,48 @@ export default function ChatPage() {
 
   // ── New chat ──
   const handleNewChat = useCallback(() => {
+    setIsCreatingConversation(false)
     setActiveConversationId(null)
     setMessages([])
     prevMessagesLenRef.current = 0
   }, [setMessages])
 
   // ── Send ──
-  // IMPORTANT: must be sync so PromptInput clears the form immediately.
-  // Conversation creation is fire-and-forget.
+  // IMPORTANT: keep this sync so PromptInput clears immediately.
+  // Queue sends behind conversation creation when needed.
   const pendingConvRef = useRef<Promise<string> | null>(null)
 
   const handleSubmit = useCallback((message: PromptInputMessage) => {
-    if (!message.text?.trim() || !credentials) return
+    const text = message.text?.trim()
+    if (!text || !credentials) return
 
-    // If no active conversation, start creating one (fire-and-forget)
-    if (!activeConversationId && !pendingConvRef.current) {
-      const text = message.text
-      pendingConvRef.current = create(titleFromMessage(text)).then((conv) => {
-        setActiveConversationId(conv.id)
-        prevMessagesLenRef.current = 0
-        pendingConvRef.current = null
-        return conv.id
-      })
+    if (activeConversationId) {
+      sendMessage({ text })
+      return
     }
 
-    sendMessage({ text: message.text })
+    if (!pendingConvRef.current) {
+      setIsCreatingConversation(true)
+      pendingConvRef.current = create(titleFromMessage(text))
+        .then((conv) => {
+          setActiveConversationId(conv.id)
+          prevMessagesLenRef.current = 0
+          return conv.id
+        })
+        .finally(() => {
+          pendingConvRef.current = null
+        })
+    }
+
+    pendingConvRef.current
+      .then(() => {
+        sendMessage({ text })
+        setIsCreatingConversation(false)
+      })
+      .catch((err) => {
+        setIsCreatingConversation(false)
+        console.error("[ChatPage] Failed to create conversation:", err)
+      })
   }, [credentials, activeConversationId, create, sendMessage])
 
   // ── Rename ──
@@ -598,10 +613,9 @@ export default function ChatPage() {
                 <PromptInput
                   onSubmit={handleSubmit}
                   className={cn(
-                    "rounded-2xl border border-border/60 bg-card/80",
-                    "shadow-md",
+                    "rounded-2xl bg-card/80",
                     "transition-all duration-200",
-                    "focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:border-primary/30",
+                    "focus-within:ring-1 focus-within:ring-ring/40",
                   )}
                 >
                   <PromptInputTextarea
@@ -615,6 +629,12 @@ export default function ChatPage() {
                     />
                   </PromptInputFooter>
                 </PromptInput>
+                {(isCreatingConversation || status === "submitted" || status === "streaming") && (
+                  <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground/70">
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                    <span>{isCreatingConversation ? "Starting chat..." : "Thinking..."}</span>
+                  </div>
+                )}
               </div>
 
               {/* Suggestion chips */}
@@ -709,10 +729,9 @@ export default function ChatPage() {
                     <PromptInput
                       onSubmit={handleSubmit}
                       className={cn(
-                        "rounded-2xl border border-border/60 bg-card/80",
-                        "shadow-md",
+                        "rounded-2xl bg-card/80",
                         "transition-all duration-200",
-                        "focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:border-primary/30",
+                        "focus-within:ring-1 focus-within:ring-ring/40",
                       )}
                     >
                       <PromptInputTextarea
@@ -733,6 +752,12 @@ export default function ChatPage() {
                         </span>
                       )}
                     </p>
+                    {(isCreatingConversation || status === "submitted" || status === "streaming") && (
+                      <div className="mt-1 flex items-center justify-center gap-2 text-xs text-muted-foreground/70">
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                        <span>{isCreatingConversation ? "Starting chat..." : "Thinking..."}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
