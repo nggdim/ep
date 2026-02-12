@@ -58,10 +58,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 
 // Lib
 import {
   getOpenAICredentials,
+  getDremioCredentials,
   saveOpenAICredentials,
   type OpenAICredentials,
 } from "@/lib/credential-store"
@@ -87,6 +95,7 @@ import {
   RefreshCcw,
   CopyIcon,
   Check,
+  Play,
 } from "lucide-react"
 
 const CHAT_RELEASE_TAG = "v0.1"
@@ -305,6 +314,49 @@ function titleFromMessage(text: string): string {
   return clean.slice(0, 47) + "..."
 }
 
+type ExtractedCodeBlock = {
+  id: string
+  language: string
+  code: string
+  messageId: string
+  indexInMessage: number
+}
+
+function sanitizeStreamedMarkdown(content: string) {
+  // While streaming, a fence can transiently end as ```s / ```sq before newline.
+  // That can make highlighters treat it as an unknown language token.
+  return content.replace(/```[^\n`]*$/, "```")
+}
+
+function extractCodeBlocks(content: string, messageId: string): ExtractedCodeBlock[] {
+  const blocks: ExtractedCodeBlock[] = []
+  const fenceRegex = /```([\w-]+)?\n([\s\S]*?)```/g
+  let match: RegExpExecArray | null
+  let idx = 0
+  while ((match = fenceRegex.exec(content)) !== null) {
+    blocks.push({
+      id: `${messageId}-code-${idx}`,
+      language: (match[1] || "text").toLowerCase(),
+      code: (match[2] || "").trimEnd(),
+      messageId,
+      indexInMessage: idx,
+    })
+    idx++
+  }
+  return blocks
+}
+
+function fallbackCodeTitle(block: ExtractedCodeBlock) {
+  const firstLine = block.code.split("\n").find((line) => line.trim().length > 0)?.trim() || ""
+  if (!firstLine) return `${block.language.toUpperCase()} block`
+  return firstLine.slice(0, 72)
+}
+
+function ChatMessageMarkdown({ content }: { content: string }) {
+  const safeContent = useMemo(() => sanitizeStreamedMarkdown(content), [content])
+  return <MessageResponse>{safeContent}</MessageResponse>
+}
+
 // ── Suggestion data ──────────────────────────────────────────────────
 
 const SUGGESTIONS = [
@@ -380,6 +432,218 @@ export default function ChatPage() {
       transport,
       onError: (err) => console.error("[ChatPage] Error:", err.message),
     })
+
+  const assistantCodeBlocks = useMemo(() => {
+    const blocks: ExtractedCodeBlock[] = []
+    for (const message of messages) {
+      if (message.role !== "assistant") continue
+      const text = message.parts
+        ?.filter((p) => p.type === "text")
+        .map((p) => (p as { type: "text"; text: string }).text)
+        .join("") || ""
+      if (!text) continue
+      blocks.push(...extractCodeBlocks(sanitizeStreamedMarkdown(text), message.id))
+    }
+    return blocks
+  }, [messages])
+
+  const [isFocusModeOpen, setIsFocusModeOpen] = useState(false)
+  const [selectedCodeBlockId, setSelectedCodeBlockId] = useState<string | null>(null)
+  const [focusEditorCode, setFocusEditorCode] = useState("")
+  const [focusSqlResult, setFocusSqlResult] = useState<{
+    rowCount: number
+    schema?: Array<{ name: string; type: { name: string } }>
+    rows?: Array<Record<string, unknown>>
+    error?: string
+    details?: string
+  } | null>(null)
+  const [isRunningFocusSql, setIsRunningFocusSql] = useState(false)
+  const [focusCopied, setFocusCopied] = useState(false)
+  const [codeSummaries, setCodeSummaries] = useState<Record<string, string>>({})
+  const [summarizingIds, setSummarizingIds] = useState<Record<string, boolean>>({})
+
+  const selectedCodeBlock = useMemo(
+    () => assistantCodeBlocks.find((b) => b.id === selectedCodeBlockId) || null,
+    [assistantCodeBlocks, selectedCodeBlockId]
+  )
+
+  useEffect(() => {
+    if (assistantCodeBlocks.length === 0) {
+      setSelectedCodeBlockId(null)
+      if (isFocusModeOpen) setIsFocusModeOpen(false)
+      return
+    }
+    if (!selectedCodeBlockId || !assistantCodeBlocks.some((b) => b.id === selectedCodeBlockId)) {
+      const next = assistantCodeBlocks[assistantCodeBlocks.length - 1]
+      setSelectedCodeBlockId(next.id)
+      setFocusEditorCode(next.code)
+      setFocusSqlResult(null)
+    }
+  }, [assistantCodeBlocks, selectedCodeBlockId, isFocusModeOpen])
+
+  useEffect(() => {
+    if (!selectedCodeBlock) return
+    setFocusEditorCode(selectedCodeBlock.code)
+    setFocusSqlResult(null)
+  }, [selectedCodeBlock?.id])
+
+  const openFocusMode = useCallback((blockId?: string) => {
+    if (assistantCodeBlocks.length === 0) return
+    const targetId = blockId || selectedCodeBlockId || assistantCodeBlocks[assistantCodeBlocks.length - 1].id
+    setSelectedCodeBlockId(targetId)
+    const targetBlock = assistantCodeBlocks.find((b) => b.id === targetId)
+    if (targetBlock) {
+      setFocusEditorCode(targetBlock.code)
+      setFocusSqlResult(null)
+    }
+    setIsFocusModeOpen(true)
+  }, [assistantCodeBlocks, selectedCodeBlockId])
+
+  const focusLanguageIsSql = useMemo(() => {
+    const lang = selectedCodeBlock?.language || ""
+    return ["sql", "postgresql", "mysql", "sqlite", "tsql", "plsql"].includes(lang)
+  }, [selectedCodeBlock?.language])
+
+  const runSqlInFocusMode = useCallback(async () => {
+    const sql = focusEditorCode.trim()
+    if (!sql) return
+    const creds = getDremioCredentials()
+    if (!creds?.endpoint || !creds?.pat) {
+      setFocusSqlResult({
+        rowCount: 0,
+        error: "Dremio credentials not configured",
+        details: "Configure Dremio credentials in Workbench settings to run SQL from chat focus mode.",
+      })
+      return
+    }
+
+    setIsRunningFocusSql(true)
+    setFocusSqlResult(null)
+    try {
+      const response = await fetch("/api/dremio/sql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: creds.endpoint,
+          pat: creds.pat,
+          sql,
+          sslVerify: creds.sslVerify,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setFocusSqlResult({
+          rowCount: 0,
+          error: data?.error || `SQL execution failed (${response.status})`,
+          details: data?.details,
+        })
+        return
+      }
+      setFocusSqlResult({
+        rowCount: data.rowCount ?? 0,
+        schema: data.schema,
+        rows: data.rows,
+      })
+    } catch (error) {
+      setFocusSqlResult({
+        rowCount: 0,
+        error: error instanceof Error ? error.message : "Unknown SQL execution error",
+      })
+    } finally {
+      setIsRunningFocusSql(false)
+    }
+  }, [focusEditorCode])
+
+  const copyFocusCode = useCallback(async () => {
+    if (!focusEditorCode.trim()) return
+    await navigator.clipboard.writeText(focusEditorCode)
+    setFocusCopied(true)
+    setTimeout(() => setFocusCopied(false), 1200)
+  }, [focusEditorCode])
+
+  useEffect(() => {
+    if (!isFocusModeOpen || assistantCodeBlocks.length === 0) return
+
+    let cancelled = false
+    const openAiCreds = getOpenAICredentials()
+    const canSummarizeWithEndpoint = Boolean(
+      openAiCreds?.baseUrl?.trim() && openAiCreds?.apiKey?.trim() && openAiCreds?.model?.trim()
+    )
+
+    const summarize = async () => {
+      for (const block of assistantCodeBlocks) {
+        if (cancelled) return
+        if (codeSummaries[block.id]) continue
+
+        if (!canSummarizeWithEndpoint) {
+          setCodeSummaries((prev) => ({
+            ...prev,
+            [block.id]: fallbackCodeTitle(block),
+          }))
+          continue
+        }
+
+        setSummarizingIds((prev) => ({ ...prev, [block.id]: true }))
+        try {
+          const res = await fetch("/api/openai", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baseUrl: openAiCreds?.baseUrl?.trim(),
+              apiKey: openAiCreds?.apiKey?.trim(),
+              model: openAiCreds?.model?.trim(),
+              skipSslVerify: openAiCreds?.sslVerify === false,
+              urlMode: openAiCreds?.urlMode || "base",
+              temperature: 0,
+              maxTokens: 24,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You create concise code titles. Return only one short title, max 8 words, no quotes, no markdown.",
+                },
+                {
+                  role: "user",
+                  content: `Language: ${block.language}\n\nCode:\n${block.code.slice(0, 3000)}`,
+                },
+              ],
+            }),
+          })
+
+          const data = await res.json()
+          const rawTitle = (data?.text || "").toString().replace(/\s+/g, " ").trim()
+          const title = rawTitle || fallbackCodeTitle(block)
+          if (!cancelled) {
+            setCodeSummaries((prev) => ({
+              ...prev,
+              [block.id]: title,
+            }))
+          }
+        } catch {
+          if (!cancelled) {
+            setCodeSummaries((prev) => ({
+              ...prev,
+              [block.id]: fallbackCodeTitle(block),
+            }))
+          }
+        } finally {
+          if (!cancelled) {
+            setSummarizingIds((prev) => {
+              const next = { ...prev }
+              delete next[block.id]
+              return next
+            })
+          }
+        }
+      }
+    }
+
+    void summarize()
+
+    return () => {
+      cancelled = true
+    }
+  }, [assistantCodeBlocks, codeSummaries, isFocusModeOpen])
 
   // ── Persist messages to Dexie when they change ──
   const prevMessagesLenRef = useRef(0)
@@ -659,6 +923,16 @@ export default function ChatPage() {
                 : "New chat"
               }
             </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5"
+              onClick={() => openFocusMode()}
+              disabled={assistantCodeBlocks.length === 0}
+            >
+              <Code className="h-3.5 w-3.5" />
+              Focus mode
+            </Button>
             <ThemeToggle />
           </header>
 
@@ -684,7 +958,7 @@ export default function ChatPage() {
             <div className="relative flex flex-col h-[calc(100vh-3rem)]">
               <Conversation>
                 <ConversationContent className={cn(
-                  "max-w-3xl mx-auto w-full px-4",
+                  "max-w-4xl mx-auto w-full px-4",
                   messages.length > 0 ? "pb-44" : "pb-8"
                 )}>
                   {messages.length === 0 ? null : (
@@ -693,21 +967,17 @@ export default function ChatPage() {
                         ?.filter((p) => p.type === "text")
                         .map((p) => (p as { type: "text"; text: string }).text)
                         .join("") || ""
+                      const messageCodeBlocks = message.role === "assistant"
+                        ? extractCodeBlocks(sanitizeStreamedMarkdown(textContent), message.id)
+                        : []
 
                       return (
                         <div key={message.id}>
-                          <Message from={message.role}>
-                            <MessageContent>
-                              {message.parts?.map((part, i) => {
-                                if (part.type === "text") {
-                                  return (
-                                    <MessageResponse key={`${message.id}-${i}`}>
-                                      {part.text}
-                                    </MessageResponse>
-                                  )
-                                }
-                                return null
-                              })}
+                          <Message from={message.role} className={message.role === "assistant" ? "max-w-full" : undefined}>
+                            <MessageContent className={message.role === "assistant" ? "w-full" : undefined}>
+                              {textContent ? (
+                                <ChatMessageMarkdown content={textContent} />
+                              ) : null}
                             </MessageContent>
                           </Message>
                           {message.role === "assistant" && textContent && (
@@ -724,6 +994,14 @@ export default function ChatPage() {
                               {idx === messages.length - 1 && (
                                 <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
                                   <RefreshCcw className="h-3 w-3" />
+                                </MessageAction>
+                              )}
+                              {messageCodeBlocks.length > 0 && (
+                                <MessageAction
+                                  tooltip="Open in focus mode"
+                                  onClick={() => openFocusMode(messageCodeBlocks[0].id)}
+                                >
+                                  <Code className="h-3 w-3" />
                                 </MessageAction>
                               )}
                             </MessageActions>
@@ -766,7 +1044,7 @@ export default function ChatPage() {
                   ? "top-1/2 -translate-y-1/2"
                   : "bottom-0 pb-4"
               )}>
-                <div className="pointer-events-auto max-w-3xl mx-auto w-full px-4">
+                <div className="pointer-events-auto max-w-4xl mx-auto w-full px-4">
                   {messages.length === 0 && (
                     <div className="mb-5 flex flex-col items-center gap-4">
                       <div className="space-y-1 text-center">
@@ -827,6 +1105,164 @@ export default function ChatPage() {
           )}
         </SidebarInset>
       </SidebarProvider>
+
+      <Sheet
+        open={isFocusModeOpen}
+        onOpenChange={(open) => {
+          setIsFocusModeOpen(open)
+          if (!open) {
+            setFocusSqlResult(null)
+            setIsRunningFocusSql(false)
+          }
+        }}
+      >
+        <SheetContent side="right" className="!w-screen !max-w-none sm:!max-w-none sm:!w-screen !h-screen border-l-0 p-0 gap-0">
+          <SheetHeader className="border-b border-border/50 px-4 py-3">
+            <SheetTitle className="text-sm">Focus Mode</SheetTitle>
+            <SheetDescription>
+              Browse code blocks on the left and edit/run on the right.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 grid grid-cols-[280px_1fr]">
+            <div className="border-r border-border/50 overflow-auto">
+              <div className="px-3 py-2 text-[11px] text-muted-foreground border-b border-border/50">
+                Code blocks ({assistantCodeBlocks.length})
+              </div>
+              <div className="p-2 space-y-1">
+                {assistantCodeBlocks.map((block) => (
+                  <button
+                    key={block.id}
+                    onClick={() => setSelectedCodeBlockId(block.id)}
+                    className={cn(
+                      "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
+                      selectedCodeBlockId === block.id
+                        ? "border-primary/40 bg-primary/10"
+                        : "border-border/40 hover:bg-accent/40"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span className="uppercase tracking-wide">{block.language}</span>
+                      {summarizingIds[block.id] && <Spinner className="h-3 w-3" />}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs font-medium text-foreground/90">
+                      {codeSummaries[block.id] || "Summarizing..."}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex flex-col">
+              {selectedCodeBlock ? (
+                <>
+                  <div className="border-b border-border/50 px-3 py-2 flex items-center justify-between gap-2">
+                    <div className="text-xs text-muted-foreground">
+                      Editing <span className="text-foreground">{selectedCodeBlock.language}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {focusLanguageIsSql && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs gap-1.5"
+                          onClick={runSqlInFocusMode}
+                          disabled={isRunningFocusSql || !focusEditorCode.trim()}
+                        >
+                          {isRunningFocusSql ? (
+                            <>
+                              <Spinner className="h-3.5 w-3.5" />
+                              Running...
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-3.5 w-3.5" />
+                              Run SQL
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs gap-1.5"
+                        onClick={copyFocusCode}
+                      >
+                        {focusCopied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                        {focusCopied ? "Copied" : "Copy"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <textarea
+                    value={focusEditorCode}
+                    onChange={(e) => setFocusEditorCode(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (focusLanguageIsSql && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault()
+                        runSqlInFocusMode()
+                      }
+                    }}
+                    className="flex-1 min-h-0 resize-none border-0 bg-background px-4 py-3 font-mono text-sm leading-6 outline-none"
+                    spellCheck={false}
+                  />
+
+                  {focusSqlResult && (
+                    <div className="max-h-[34vh] overflow-auto border-t border-border/50">
+                      <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/40">
+                        {focusSqlResult.error
+                          ? "SQL execution error"
+                          : `${focusSqlResult.rowCount} row${focusSqlResult.rowCount === 1 ? "" : "s"} returned`}
+                      </div>
+                      {focusSqlResult.error ? (
+                        <div className="p-4 text-sm">
+                          <p className="text-destructive">{focusSqlResult.error}</p>
+                          {focusSqlResult.details && (
+                            <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">
+                              {focusSqlResult.details}
+                            </pre>
+                          )}
+                        </div>
+                      ) : focusSqlResult.rows && focusSqlResult.rows.length > 0 ? (
+                        <table className="w-full text-xs">
+                          <thead className="sticky top-0 bg-card/80 backdrop-blur">
+                            <tr className="border-b border-border/50">
+                              {focusSqlResult.schema?.map((col) => (
+                                <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">
+                                  {col.name}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {focusSqlResult.rows.map((row, rowIdx) => (
+                              <tr key={rowIdx} className="border-b border-border/30">
+                                {focusSqlResult.schema?.map((col) => (
+                                  <td key={`${rowIdx}-${col.name}`} className="px-3 py-2 font-mono whitespace-nowrap">
+                                    {String(row[col.name] ?? "NULL")}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="p-4 text-xs text-muted-foreground">
+                          Query executed successfully. No rows returned.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+                  No code block selected.
+                </div>
+              )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
