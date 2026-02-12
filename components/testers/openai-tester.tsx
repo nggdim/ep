@@ -6,9 +6,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { ModeToggle, type RequestMode } from "@/components/ui/mode-toggle"
+import { Spinner } from "@/components/ui/spinner"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
-import { Loader2, Play, Eye, EyeOff, Sparkles, Settings2 } from "lucide-react"
+import { Play, Eye, EyeOff, Sparkles, Settings2 } from "lucide-react"
 import { getOpenAICredentials } from "@/lib/credential-store"
 
 type Props = {
@@ -26,6 +27,7 @@ export function OpenAiTester({ onResult }: Props) {
   const [maxTokens, setMaxTokens] = useState("100")
   const [skipSslVerify, setSkipSslVerify] = useState(false)
   const [mode, setMode] = useState<RequestMode>("server")
+  const [urlMode, setUrlMode] = useState<"base" | "endpoint">("base")
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
   const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
@@ -38,19 +40,20 @@ export function OpenAiTester({ onResult }: Props) {
       setApiKey(stored.apiKey)
       setModel(stored.model)
       setSkipSslVerify(stored.sslVerify === false)
+      setUrlMode(stored.urlMode || "base")
       setHasStoredCredentials(true)
     }
   }, [])
 
   const validateInputs = (): { valid: boolean; message: string } => {
     if (!baseUrl.trim()) {
-      return { valid: false, message: "Base URL is required" }
+      return { valid: false, message: urlMode === "base" ? "Base URL is required" : "Endpoint URL is required" }
     }
 
     try {
       new URL(baseUrl)
     } catch {
-      return { valid: false, message: "Invalid Base URL format" }
+      return { valid: false, message: urlMode === "base" ? "Invalid Base URL format" : "Invalid endpoint URL format" }
     }
 
     if (!apiKey.trim()) {
@@ -67,8 +70,10 @@ export function OpenAiTester({ onResult }: Props) {
   const testConnectionClient = async () => {
     const startTime = performance.now()
     
-    // Build the URL - user provides base like "https://openrouter.ai/api"
-    const apiUrl = `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`
+    const normalizedUrl = baseUrl.replace(/\/+$/, "")
+    const apiUrl = urlMode === "endpoint"
+      ? normalizedUrl
+      : `${normalizedUrl}/v1/chat/completions`
     
     // Build request body
     const requestBody = {
@@ -196,6 +201,7 @@ export function OpenAiTester({ onResult }: Props) {
 
   const testConnectionServer = async () => {
     const startTime = performance.now()
+    const normalizedUrl = baseUrl.replace(/\/+$/, "")
 
     try {
       const response = await fetch("/api/openai", {
@@ -204,9 +210,10 @@ export function OpenAiTester({ onResult }: Props) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          baseUrl: baseUrl.replace(/\/+$/, ""),
+          baseUrl: normalizedUrl,
           apiKey,
           model: model.trim(),
+          urlMode,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
@@ -313,20 +320,56 @@ export function OpenAiTester({ onResult }: Props) {
           {/* Mode Toggle */}
           <ModeToggle value={mode} onChange={setMode} disabled={testing} />
 
-          {/* Base URL */}
+          {/* URL Mode */}
+          <div>
+            <Label className="text-sm text-muted-foreground mb-1.5 block">
+              URL Mode
+            </Label>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={urlMode === "base" ? "default" : "outline"}
+                onClick={() => setUrlMode("base")}
+                disabled={testing}
+              >
+                Base URL
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={urlMode === "endpoint" ? "default" : "outline"}
+                onClick={() => setUrlMode("endpoint")}
+                disabled={testing}
+              >
+                Full Endpoint
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {urlMode === "base"
+                ? "Use base URL (the tester appends /v1/chat/completions)."
+                : "Use full endpoint URL (for example .../v1/chat/completions)."}
+            </p>
+          </div>
+
+          {/* Base URL / Endpoint */}
           <div>
             <Label htmlFor="base-url" className="text-sm text-muted-foreground mb-1.5 block">
-              Base URL
+              {urlMode === "base" ? "Base URL" : "Chat Completions Endpoint"}
             </Label>
             <Input
               id="base-url"
-              placeholder="https://api.openai.com or https://your-maas-endpoint.example.com"
+              placeholder={urlMode === "base"
+                ? "https://api.openai.com or https://your-maas-endpoint.example.com"
+                : "https://openrouter.ai/api/v1/chat/completions"}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               className="bg-input font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              The base URL of the OpenAI-compatible API (without /v1 suffix)
+              {urlMode === "base"
+                ? "The base URL of the OpenAI-compatible API (without /v1 suffix)"
+                : "A full endpoint URL that accepts POST chat/completions requests"}
             </p>
           </div>
 
@@ -474,7 +517,7 @@ export function OpenAiTester({ onResult }: Props) {
       <Button onClick={testConnection} disabled={testing} className="w-full">
         {testing ? (
           <>
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            <Spinner className="h-4 w-4 mr-2" />
             Testing Connection ({mode} mode)...
           </>
         ) : (

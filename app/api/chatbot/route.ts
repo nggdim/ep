@@ -26,10 +26,24 @@ Guidelines:
 - If you're unsure about something, say so honestly
 - Ask clarifying questions when the request is ambiguous`
 
+function resolveProviderBaseUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
+  const normalized = baseUrl.trim().replace(/\/+$/, "")
+
+  if (urlMode === "endpoint") {
+    // Convert full endpoint (.../chat/completions) back to provider base URL.
+    return normalized.replace(/\/chat\/completions$/i, "")
+  }
+
+  if (normalized.endsWith("/v1")) {
+    return normalized
+  }
+  return `${normalized}/v1`
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify, systemPrompt } = body
+    const { messages, baseUrl, apiKey, model, skipSslVerify, systemPrompt, urlMode } = body
 
     if (!baseUrl || !apiKey || !model) {
       return new Response(
@@ -52,11 +66,7 @@ export async function POST(req: Request) {
       ...modelMessages,
     ]
 
-    // Normalize base URL
-    let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "")
-    if (!normalizedBaseUrl.endsWith("/v1")) {
-      normalizedBaseUrl = `${normalizedBaseUrl}/v1`
-    }
+    const providerBaseUrl = resolveProviderBaseUrl(baseUrl, urlMode)
 
     // Custom fetch for SSL bypass
     const customFetch = skipSslVerify
@@ -92,7 +102,7 @@ export async function POST(req: Request) {
     const provider = createOpenAICompatible({
       name: "custom-openai",
       apiKey,
-      baseURL: normalizedBaseUrl,
+      baseURL: providerBaseUrl,
       fetch: customFetch,
     })
 

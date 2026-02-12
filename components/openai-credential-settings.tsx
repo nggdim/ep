@@ -18,11 +18,11 @@ import {
   EyeOff, 
   CheckCircle2, 
   AlertCircle,
-  Loader2,
   Shield,
   ShieldOff
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Spinner } from "@/components/ui/spinner"
 
 interface OpenAICredentialSettingsProps {
   onCredentialsChange?: (credentials: OpenAICredentials | null) => void
@@ -33,6 +33,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState("")
   const [sslVerify, setSslVerify] = useState(true)
+  const [urlMode, setUrlMode] = useState<"base" | "endpoint">("base")
   const [showApiKey, setShowApiKey] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
@@ -47,6 +48,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
       setApiKey(stored.apiKey)
       setModel(stored.model)
       setSslVerify(stored.sslVerify !== false) // Default to true if not set
+      setUrlMode(stored.urlMode || "base")
       setHasStoredCredentials(true)
     }
   }, [])
@@ -59,7 +61,8 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
       baseUrl: baseUrl.trim(),
       apiKey: apiKey.trim(),
       model: model.trim(),
-      sslVerify
+      sslVerify,
+      urlMode,
     }
     
     saveOpenAICredentials(credentials)
@@ -96,7 +99,8 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
         body: JSON.stringify({
           baseUrl: baseUrl.trim(),
           apiKey: apiKey.trim(),
-          skipSslVerify: !sslVerify
+          skipSslVerify: !sslVerify,
+          urlMode,
         })
       })
 
@@ -151,18 +155,47 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
       {/* Form */}
       <div className="space-y-4">
         <div className="space-y-2">
+          <Label className="text-sm">URL Mode</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={urlMode === "base" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setUrlMode("base")}
+            >
+              Base URL
+            </Button>
+            <Button
+              type="button"
+              variant={urlMode === "endpoint" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setUrlMode("endpoint")}
+            >
+              Full Endpoint
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {urlMode === "base"
+              ? "Base URL example: https://openrouter.ai/api"
+              : "Full endpoint example: https://openrouter.ai/api/v1/chat/completions"}
+          </p>
+        </div>
+
+        <div className="space-y-2">
           <Label htmlFor="openai-base-url" className="text-sm">
-            Base URL
+            {urlMode === "base" ? "Base URL" : "Chat Completions Endpoint"}
           </Label>
           <Input
             id="openai-base-url"
-            placeholder="https://your-model-provider.example.com"
+            placeholder={urlMode === "base" ? "https://your-model-provider.example.com" : "https://your-model-provider.example.com/v1/chat/completions"}
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             className="bg-input font-mono text-sm"
           />
           <p className="text-[10px] text-muted-foreground">
-            The base URL of your OpenAI-compatible API (without /v1 suffix)
+            {urlMode === "base"
+              ? "The base URL of your OpenAI-compatible API (without /v1 suffix)"
+              : "The full endpoint URL used for POST chat/completions requests"}
           </p>
         </div>
 
@@ -300,7 +333,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
         >
           {isTesting ? (
             <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              <Spinner className="h-4 w-4 mr-2" />
               Testing...
             </>
           ) : (
@@ -316,7 +349,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
         >
           {isSaving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              <Spinner className="h-4 w-4 mr-2" />
               Saving...
             </>
           ) : (

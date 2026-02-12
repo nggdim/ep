@@ -27,7 +27,6 @@ import {
 import {
   Conversation,
   ConversationContent,
-  ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
 import {
@@ -43,16 +42,14 @@ import {
   PromptInputSubmit,
   PromptInputFooter,
   PromptInputTools,
-  PromptInputButton,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
-import { Suggestions, Suggestion } from "@/components/ai-elements/suggestion"
 
 // UI
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
+import { Spinner } from "@/components/ui/spinner"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -109,6 +106,9 @@ function SettingsPanel({
   const [apiKey, setApiKey] = useState(credentials?.apiKey || "")
   const [model, setModel] = useState(credentials?.model || "")
   const [sslVerify, setSslVerify] = useState(credentials?.sslVerify !== false)
+  const [urlMode, setUrlMode] = useState<"base" | "endpoint">(credentials?.urlMode || "base")
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const handleSave = () => {
     const creds: OpenAICredentials = {
@@ -116,6 +116,7 @@ function SettingsPanel({
       apiKey: apiKey.trim(),
       model: model.trim(),
       sslVerify,
+      urlMode,
     }
     saveOpenAICredentials(creds)
     onSave(creds)
@@ -123,6 +124,50 @@ function SettingsPanel({
   }
 
   const isValid = baseUrl.trim() && apiKey.trim() && model.trim()
+
+  const handleTest = async () => {
+    if (!isValid || isTesting) return
+
+    setIsTesting(true)
+    setTestResult(null)
+
+    try {
+      const res = await fetch("/api/openai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: baseUrl.trim(),
+          apiKey: apiKey.trim(),
+          model: model.trim(),
+          skipSslVerify: sslVerify === false,
+          urlMode,
+          messages: [
+            { role: "system", content: "You are a test assistant." },
+            { role: "user", content: "Respond with exactly: CONNECTION_OK" },
+          ],
+          temperature: 0,
+          maxTokens: 12,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error || "Connection test failed")
+      }
+
+      setTestResult({
+        ok: true,
+        message: `Success: ${data?.text || "Connection test passed"}`,
+      })
+    } catch (error) {
+      setTestResult({
+        ok: false,
+        message: error instanceof Error ? error.message : "Connection test failed",
+      })
+    } finally {
+      setIsTesting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
@@ -141,8 +186,41 @@ function SettingsPanel({
 
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="settings-baseUrl" className="text-sm">Base URL</Label>
-            <Input id="settings-baseUrl" placeholder="https://api.openai.com" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+            <Label className="text-sm">URL Mode</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={urlMode === "base" ? "default" : "outline"}
+                onClick={() => setUrlMode("base")}
+                className="text-xs"
+              >
+                Base URL
+              </Button>
+              <Button
+                type="button"
+                variant={urlMode === "endpoint" ? "default" : "outline"}
+                onClick={() => setUrlMode("endpoint")}
+                className="text-xs"
+              >
+                Full Endpoint
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {urlMode === "base"
+                ? "Use values like https://openrouter.ai/api (the app adds /v1/chat/completions)."
+                : "Use a full chat completions URL like https://openrouter.ai/api/v1/chat/completions."}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="settings-baseUrl" className="text-sm">
+              {urlMode === "base" ? "Base URL" : "Chat Completions Endpoint"}
+            </Label>
+            <Input
+              id="settings-baseUrl"
+              placeholder={urlMode === "base" ? "https://api.openai.com" : "https://openrouter.ai/api/v1/chat/completions"}
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="settings-apiKey" className="text-sm">API Key</Label>
@@ -160,8 +238,31 @@ function SettingsPanel({
 
         <div className="flex gap-3 mt-6">
           <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+          <Button
+            variant="outline"
+            onClick={handleTest}
+            disabled={!isValid || isTesting}
+            className="flex-1"
+          >
+            {isTesting ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner className="size-3.5" />
+                Testing...
+              </span>
+            ) : "Test Connection"}
+          </Button>
           <Button onClick={handleSave} disabled={!isValid} className="flex-1">Save & Connect</Button>
         </div>
+        {testResult && (
+          <p
+            className={cn(
+              "mt-3 text-xs",
+              testResult.ok ? "text-success" : "text-destructive"
+            )}
+          >
+            {testResult.message}
+          </p>
+        )}
       </div>
     </div>
   )
@@ -266,6 +367,7 @@ export default function ChatPage() {
         apiKey: credentialsRef.current?.apiKey,
         model: credentialsRef.current?.model,
         skipSslVerify: credentialsRef.current?.sslVerify === false,
+        urlMode: credentialsRef.current?.urlMode || "base",
       }),
     })
   }, [])
@@ -379,6 +481,8 @@ export default function ChatPage() {
   }, [conversations, searchQuery])
 
   const groups = useMemo(() => groupConversations(filteredConversations), [filteredConversations])
+  const isWaitingForAssistant = (status === "submitted" || status === "streaming") &&
+    (messages.length === 0 || messages[messages.length - 1]?.role !== "assistant")
 
   // ── Suggestion click ──
   const [inputText, setInputText] = useState("")
@@ -405,9 +509,9 @@ export default function ChatPage() {
         />
       )}
 
-      <SidebarProvider defaultOpen>
+      <SidebarProvider defaultOpen className="[--sidebar:var(--background)]">
         {/* ── Sidebar ── */}
-        <Sidebar className="border-r border-border/50">
+        <Sidebar className="border-r border-border/50 bg-background">
           <SidebarHeader className="p-3 gap-3">
             <div className="flex items-center gap-2">
               <div className="p-1.5 rounded-lg bg-primary/10">
@@ -549,7 +653,6 @@ export default function ChatPage() {
         <SidebarInset>
           <header className="h-12 flex items-center gap-2 px-4 border-b border-border/50 shrink-0">
             <SidebarTrigger />
-            <Separator orientation="vertical" className="h-4" />
             <span className="text-sm text-muted-foreground truncate flex-1">
               {activeConversationId
                 ? conversations.find((c) => c.id === activeConversationId)?.title || "Chat"
@@ -580,41 +683,11 @@ export default function ChatPage() {
             /* ── Chat ── */
             <div className="relative flex flex-col h-[calc(100vh-3rem)]">
               <Conversation>
-                <ConversationContent className="max-w-3xl mx-auto w-full px-4 pb-44">
-                  {messages.length === 0 ? (
-                    <ConversationEmptyState
-                      icon={<Sparkles className="h-10 w-10 text-primary" />}
-                      title="How can I help you today?"
-                      description="Ask me anything — code, explanations, debugging, writing, and more."
-                    >
-                      <div className="flex flex-col items-center gap-6 mt-2">
-                        <div className="space-y-1 text-center">
-                          <h3 className="font-medium text-sm">How can I help you today?</h3>
-                          <p className="text-muted-foreground text-sm">
-                            Ask me anything — code, explanations, debugging, writing, and more.
-                          </p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-                          {SUGGESTIONS.map((s) => (
-                            <button
-                              key={s.label}
-                              onClick={() => handleSuggestionClick(s.prompt)}
-                              className={cn(
-                                "flex items-center gap-2.5 px-4 py-3 rounded-xl text-left text-sm",
-                                "border border-border/50 bg-card/50",
-                                "hover:bg-accent/50 hover:border-border transition-all group"
-                              )}
-                            >
-                              <s.icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
-                              <span className="text-muted-foreground group-hover:text-foreground transition-colors">
-                                {s.label}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </ConversationEmptyState>
-                  ) : (
+                <ConversationContent className={cn(
+                  "max-w-3xl mx-auto w-full px-4",
+                  messages.length > 0 ? "pb-44" : "pb-8"
+                )}>
+                  {messages.length === 0 ? null : (
                     messages.map((message, idx) => {
                       const textContent = message.parts
                         ?.filter((p) => p.type === "text")
@@ -659,6 +732,16 @@ export default function ChatPage() {
                       )
                     })
                   )}
+                  {isWaitingForAssistant && (
+                    <Message from="assistant">
+                      <MessageContent>
+                        <div className="inline-flex items-center gap-2 text-muted-foreground">
+                          <Spinner className="size-4" />
+                          <span className="text-sm">Thinking...</span>
+                        </div>
+                      </MessageContent>
+                    </Message>
+                  )}
 
                   {/* Error */}
                   {error && (
@@ -677,44 +760,60 @@ export default function ChatPage() {
               </Conversation>
 
               {/* ── Input ── */}
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 pb-4">
+              <div className={cn(
+                "pointer-events-none absolute inset-x-0",
+                messages.length === 0
+                  ? "top-1/2 -translate-y-1/2"
+                  : "bottom-0 pb-4"
+              )}>
                 <div className="pointer-events-auto max-w-3xl mx-auto w-full px-4">
+                  {messages.length === 0 && (
+                    <div className="mb-5 flex flex-col items-center gap-4">
+                      <div className="space-y-1 text-center">
+                        <h3 className="font-semibold text-2xl">How can I help you today?</h3>
+                        <p className="text-muted-foreground text-base">
+                          Ask me anything — code, explanations, debugging, writing, and more.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 w-full max-w-md">
+                        {SUGGESTIONS.map((s) => (
+                          <button
+                            key={s.label}
+                            onClick={() => handleSuggestionClick(s.prompt)}
+                            className={cn(
+                              "flex items-center gap-2.5 px-4 py-3 rounded-xl text-left text-sm",
+                              "border border-border/50 bg-card/50",
+                              "hover:bg-accent/50 hover:border-border transition-all group"
+                            )}
+                          >
+                            <s.icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                            <span className="text-muted-foreground group-hover:text-foreground transition-colors">
+                              {s.label}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <PromptInput
                     onSubmit={handleSubmit}
-                    className={cn(
-                      "rounded-2xl border border-border/50 bg-background/90 backdrop-blur-md shadow-lg",
-                      "transition-all duration-200",
-                      "focus-within:border-primary/40 focus-within:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.45)]"
-                    )}
+                    className="chat-prompt-neutral bg-white dark:bg-card shadow-lg rounded-2xl overflow-hidden"
                   >
                     <PromptInputTextarea
                       placeholder="Send a message..."
                       value={inputText}
                       onChange={(e) => setInputText(e.target.value)}
+                      className="px-5 py-4"
                     />
-                    <PromptInputFooter className="p-2">
-                      <PromptInputTools>
-                        <Suggestions>
-                          {messages.length === 0 && SUGGESTIONS.map((s) => (
-                            <Suggestion
-                              key={s.label}
-                              suggestion={s.prompt}
-                              onClick={() => handleSuggestionClick(s.prompt)}
-                              className="text-xs"
-                            >
-                              <s.icon className="h-3 w-3 mr-1" />
-                              {s.label}
-                            </Suggestion>
-                          ))}
-                        </Suggestions>
-                      </PromptInputTools>
+                    <PromptInputFooter>
+                      <PromptInputTools />
                       <PromptInputSubmit
                         status={status === "streaming" ? "streaming" : status === "submitted" ? "submitted" : "ready"}
                         disabled={!inputText.trim() || status === "streaming" || status === "submitted"}
                       />
                     </PromptInputFooter>
                   </PromptInput>
-                  <p className="text-[11px] text-muted-foreground/50 mt-2 text-center drop-shadow-sm">
+                  <p className="text-[11px] text-muted-foreground/50 mt-2 text-center">
                     Enter to send, Shift+Enter for new line
                     {credentials?.model && (
                       <span className="ml-1">

@@ -223,3 +223,16 @@
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+/* Chat prompt neutral focus state (remove green accent) */
+.chat-prompt-neutral [data-slot="input-group"] {
+  border-color: var(--color-border);
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+.chat-prompt-neutral
+  [data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
+  border-color: var(--color-border) !important;
+  box-shadow: none !important;
+}

@@ -10,9 +10,23 @@ interface OpenAIResponse {
   message?: string
 }
 
+function resolveChatCompletionsUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
+  const normalized = baseUrl.trim().replace(/\/+$/, "")
+  if (urlMode === "endpoint") {
+    return normalized
+  }
+
+  let normalizedBase = normalized
+  if (!normalizedBase.endsWith("/v1")) {
+    normalizedBase = `${normalizedBase}/v1`
+  }
+
+  return `${normalizedBase}/chat/completions`
+}
+
 export async function POST(req: Request) {
   try {
-    const { baseUrl, apiKey, model, messages, temperature, maxTokens, skipSslVerify } = await req.json()
+    const { baseUrl, apiKey, model, messages, temperature, maxTokens, skipSslVerify, urlMode } = await req.json()
 
     if (!baseUrl || !apiKey) {
       return new Response(JSON.stringify({ error: "Base URL and API Key are required" }), {
@@ -39,7 +53,7 @@ export async function POST(req: Request) {
       max_tokens: maxTokens ?? 100,
     }
 
-    const apiUrl = `${baseUrl}/v1/chat/completions`
+    const apiUrl = resolveChatCompletionsUrl(baseUrl, urlMode)
     const headers = {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${apiKey}`,

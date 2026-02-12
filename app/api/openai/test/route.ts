@@ -20,11 +20,25 @@ interface TestResult {
   details?: Record<string, unknown>
 }
 
+function resolveModelsUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
+  const normalized = baseUrl.trim().replace(/\/+$/, "")
+
+  if (urlMode === "endpoint") {
+    if (normalized.endsWith("/models")) {
+      return normalized
+    }
+    const root = normalized.replace(/\/chat\/completions$/i, "")
+    return `${root}/models`
+  }
+
+  return `${normalized}/v1/models`
+}
+
 export async function POST(req: Request) {
   const startTime = performance.now()
 
   try {
-    const { baseUrl, apiKey, skipSslVerify } = await req.json()
+    const { baseUrl, apiKey, skipSslVerify, urlMode } = await req.json()
 
     if (!baseUrl || !apiKey) {
       return new Response(
@@ -40,7 +54,7 @@ export async function POST(req: Request) {
     }
 
     // Test connection by fetching available models
-    const apiUrl = `${baseUrl.replace(/\/+$/, "")}/v1/models`
+    const apiUrl = resolveModelsUrl(baseUrl, urlMode)
     const headers = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,

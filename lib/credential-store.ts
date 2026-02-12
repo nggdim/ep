@@ -12,6 +12,7 @@ export interface OpenAICredentials {
   apiKey: string
   model: string
   sslVerify?: boolean
+  urlMode?: "base" | "endpoint"
 }
 
 export interface ADFSCredentials {
