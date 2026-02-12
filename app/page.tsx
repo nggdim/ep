@@ -7,7 +7,7 @@ import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { useRouter } from "next/navigation"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen } from "lucide-react"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
@@ -212,6 +212,16 @@ export default function Page() {
           </div>
 
           <div className="flex-1" />
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => router.push("/chat")}
+          >
+            <Sparkles className="h-3 w-3" />
+            Chat
+          </Button>
 
           <Button
             variant="outline"
