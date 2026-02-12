@@ -43,8 +43,10 @@ import {
   PromptInputSubmit,
   PromptInputFooter,
   PromptInputTools,
+  PromptInputButton,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
+import { Suggestions, Suggestion } from "@/components/ai-elements/suggestion"
 
 // UI
 import { Button } from "@/components/ui/button"
@@ -251,7 +253,6 @@ export default function ChatPage() {
   const [renameValue, setRenameValue] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
-  const [isCreatingConversation, setIsCreatingConversation] = useState(false)
 
   // ── Transport ──
   const transport = useMemo(() => {
@@ -267,11 +268,11 @@ export default function ChatPage() {
     })
   }, [credentials])
 
-  // Keep a stable chat id so in-flight requests are not reset
-  // when activeConversationId changes (e.g., first message creates a chat).
-  const { messages, setMessages, sendMessage, regenerate, status, error } =
+  const chatId = useMemo(() => "chatbot-main", [])
+
+  const { messages, setMessages, sendMessage, regenerate, status, error, stop } =
     useChat({
-      id: "chatbot-main",
+      id: chatId,
       transport,
       onError: (err) => console.error("[ChatPage] Error:", err.message),
     })
@@ -302,7 +303,6 @@ export default function ChatPage() {
 
   // ── Load messages when switching conversations ──
   const loadConversation = useCallback(async (conversationId: string) => {
-    setIsCreatingConversation(false)
     setActiveConversationId(conversationId)
     prevMessagesLenRef.current = 0
     const stored = await getChatMessages(conversationId)
@@ -323,48 +323,26 @@ export default function ChatPage() {
 
   // ── New chat ──
   const handleNewChat = useCallback(() => {
-    setIsCreatingConversation(false)
     setActiveConversationId(null)
     setMessages([])
     prevMessagesLenRef.current = 0
   }, [setMessages])
 
   // ── Send ──
-  // IMPORTANT: keep this sync so PromptInput clears immediately.
-  // Queue sends behind conversation creation when needed.
-  const pendingConvRef = useRef<Promise<string> | null>(null)
+  const handleSubmit = useCallback(async (message: PromptInputMessage) => {
+    if (!message.text?.trim() || !credentials) return
 
-  const handleSubmit = useCallback((message: PromptInputMessage) => {
-    const text = message.text?.trim()
-    if (!text || !credentials) return
-
-    if (activeConversationId) {
-      sendMessage({ text })
-      return
+    // If no active conversation, create one
+    let convId = activeConversationId
+    if (!convId) {
+      const conv = await create(titleFromMessage(message.text))
+      convId = conv.id
+      setActiveConversationId(convId)
+      prevMessagesLenRef.current = 0
     }
 
-    if (!pendingConvRef.current) {
-      setIsCreatingConversation(true)
-      pendingConvRef.current = create(titleFromMessage(text))
-        .then((conv) => {
-          setActiveConversationId(conv.id)
-          prevMessagesLenRef.current = 0
-          return conv.id
-        })
-        .finally(() => {
-          pendingConvRef.current = null
-        })
-    }
-
-    pendingConvRef.current
-      .then(() => {
-        sendMessage({ text })
-        setIsCreatingConversation(false)
-      })
-      .catch((err) => {
-        setIsCreatingConversation(false)
-        console.error("[ChatPage] Failed to create conversation:", err)
-      })
+    sendMessage({ text: message.text })
+    setInputText("")
   }, [credentials, activeConversationId, create, sendMessage])
 
   // ── Rename ──
@@ -400,21 +378,10 @@ export default function ChatPage() {
 
   const groups = useMemo(() => groupConversations(filteredConversations), [filteredConversations])
 
-  // ── Textarea ref for suggestion injection ──
-  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
-
-  // Set textarea value natively (PromptInput manages its own form state)
+  // ── Suggestion click ──
+  const [inputText, setInputText] = useState("")
   const handleSuggestionClick = useCallback((suggestion: string) => {
-    const ta = promptTextareaRef.current
-    if (ta) {
-      // Use native input setter to trigger React's onChange
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype, "value"
-      )?.set
-      nativeInputValueSetter?.call(ta, suggestion)
-      ta.dispatchEvent(new Event("input", { bubbles: true }))
-      ta.focus()
-    }
+    setInputText(suggestion)
   }, [])
 
   // ── Loading ──
@@ -604,107 +571,89 @@ export default function ChatPage() {
                 </Button>
               </div>
             </div>
-          ) : messages.length === 0 ? (
-            /* ── Empty / Landing State — centered prompt ── */
-            <div className="flex-1 flex flex-col items-center justify-center px-4">
-              <h2 className="text-2xl font-semibold mb-8">What can I help with?</h2>
-
-              <div className="w-full max-w-2xl">
-                <PromptInput
-                  onSubmit={handleSubmit}
-                  className={cn(
-                    "rounded-2xl bg-card/80",
-                    "transition-all duration-200",
-                    "focus-within:ring-1 focus-within:ring-ring/40",
-                  )}
-                >
-                  <PromptInputTextarea
-                    ref={promptTextareaRef}
-                    placeholder="Send a message..."
-                  />
-                  <PromptInputFooter className="p-2">
-                    <PromptInputTools />
-                    <PromptInputSubmit
-                      status={status === "streaming" ? "streaming" : status === "submitted" ? "submitted" : "ready"}
-                    />
-                  </PromptInputFooter>
-                </PromptInput>
-                {(isCreatingConversation || status === "submitted" || status === "streaming") && (
-                  <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground/70">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                    <span>{isCreatingConversation ? "Starting chat..." : "Thinking..."}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Suggestion chips */}
-              <div className="flex flex-wrap items-center justify-center gap-2 mt-5">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s.label}
-                    onClick={() => handleSuggestionClick(s.prompt)}
-                    className={cn(
-                      "flex items-center gap-2 px-4 py-2 rounded-full text-sm",
-                      "border border-border/50 bg-card/50",
-                      "hover:bg-accent/50 hover:border-border transition-all group"
-                    )}
-                  >
-                    <s.icon className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
-                    <span className="text-muted-foreground group-hover:text-foreground transition-colors">
-                      {s.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
           ) : (
-            /* ── Active Chat — prompt at bottom ── */
+            /* ── Chat ── */
             <div className="relative flex flex-col h-[calc(100vh-3rem)]">
               <Conversation>
                 <ConversationContent className="max-w-3xl mx-auto w-full px-4 pb-44">
-                  {messages.map((message, idx) => {
-                    const textContent = message.parts
-                      ?.filter((p) => p.type === "text")
-                      .map((p) => (p as { type: "text"; text: string }).text)
-                      .join("") || ""
-
-                    return (
-                      <div key={message.id}>
-                        <Message from={message.role}>
-                          <MessageContent>
-                            {message.parts?.map((part, i) => {
-                              if (part.type === "text") {
-                                return (
-                                  <MessageResponse key={`${message.id}-${i}`}>
-                                    {part.text}
-                                  </MessageResponse>
-                                )
-                              }
-                              return null
-                            })}
-                          </MessageContent>
-                        </Message>
-                        {message.role === "assistant" && textContent && (
-                          <MessageActions className="mt-1 ml-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <MessageAction
-                              tooltip="Copy"
-                              onClick={() => handleCopyMessage(textContent, message.id)}
+                  {messages.length === 0 ? (
+                    <ConversationEmptyState
+                      icon={<Sparkles className="h-10 w-10 text-primary" />}
+                      title="How can I help you today?"
+                      description="Ask me anything — code, explanations, debugging, writing, and more."
+                    >
+                      <div className="flex flex-col items-center gap-6 mt-2">
+                        <div className="space-y-1 text-center">
+                          <h3 className="font-medium text-sm">How can I help you today?</h3>
+                          <p className="text-muted-foreground text-sm">
+                            Ask me anything — code, explanations, debugging, writing, and more.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 w-full max-w-md">
+                          {SUGGESTIONS.map((s) => (
+                            <button
+                              key={s.label}
+                              onClick={() => handleSuggestionClick(s.prompt)}
+                              className={cn(
+                                "flex items-center gap-2.5 px-4 py-3 rounded-xl text-left text-sm",
+                                "border border-border/50 bg-card/50",
+                                "hover:bg-accent/50 hover:border-border transition-all group"
+                              )}
                             >
-                              {copiedMessageId === message.id
-                                ? <Check className="h-3 w-3" />
-                                : <CopyIcon className="h-3 w-3" />
-                              }
-                            </MessageAction>
-                            {idx === messages.length - 1 && (
-                              <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
-                                <RefreshCcw className="h-3 w-3" />
-                              </MessageAction>
-                            )}
-                          </MessageActions>
-                        )}
+                              <s.icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                              <span className="text-muted-foreground group-hover:text-foreground transition-colors">
+                                {s.label}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    )
-                  })}
+                    </ConversationEmptyState>
+                  ) : (
+                    messages.map((message, idx) => {
+                      const textContent = message.parts
+                        ?.filter((p) => p.type === "text")
+                        .map((p) => (p as { type: "text"; text: string }).text)
+                        .join("") || ""
+
+                      return (
+                        <div key={message.id}>
+                          <Message from={message.role}>
+                            <MessageContent>
+                              {message.parts?.map((part, i) => {
+                                if (part.type === "text") {
+                                  return (
+                                    <MessageResponse key={`${message.id}-${i}`}>
+                                      {part.text}
+                                    </MessageResponse>
+                                  )
+                                }
+                                return null
+                              })}
+                            </MessageContent>
+                          </Message>
+                          {message.role === "assistant" && textContent && (
+                            <MessageActions className="mt-1 ml-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <MessageAction
+                                tooltip="Copy"
+                                onClick={() => handleCopyMessage(textContent, message.id)}
+                              >
+                                {copiedMessageId === message.id
+                                  ? <Check className="h-3 w-3" />
+                                  : <CopyIcon className="h-3 w-3" />
+                                }
+                              </MessageAction>
+                              {idx === messages.length - 1 && (
+                                <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
+                                  <RefreshCcw className="h-3 w-3" />
+                                </MessageAction>
+                              )}
+                            </MessageActions>
+                          )}
+                        </div>
+                      )
+                    })
+                  )}
 
                   {/* Error */}
                   {error && (
@@ -722,43 +671,52 @@ export default function ChatPage() {
                 <ConversationScrollButton />
               </Conversation>
 
-              {/* ── Floating Input (bottom) ── */}
-              <div className="absolute bottom-0 inset-x-0 pointer-events-none">
-                <div className="pointer-events-auto bg-gradient-to-t from-background via-background/95 to-transparent pt-8 pb-4">
-                  <div className="max-w-3xl mx-auto w-full px-4">
-                    <PromptInput
-                      onSubmit={handleSubmit}
-                      className={cn(
-                        "rounded-2xl bg-card/80",
-                        "transition-all duration-200",
-                        "focus-within:ring-1 focus-within:ring-ring/40",
-                      )}
-                    >
-                      <PromptInputTextarea
-                        placeholder="Send a message..."
-                      />
-                      <PromptInputFooter className="p-2">
-                        <PromptInputTools />
-                        <PromptInputSubmit
-                          status={status === "streaming" ? "streaming" : status === "submitted" ? "submitted" : "ready"}
-                        />
-                      </PromptInputFooter>
-                    </PromptInput>
-                    <p className="text-[11px] text-muted-foreground/40 mt-2 text-center">
-                      Enter to send, Shift+Enter for new line
-                      {credentials?.model && (
-                        <span className="ml-1">
-                          · <span className="text-muted-foreground/50">{credentials.model}</span>
-                        </span>
-                      )}
-                    </p>
-                    {(isCreatingConversation || status === "submitted" || status === "streaming") && (
-                      <div className="mt-1 flex items-center justify-center gap-2 text-xs text-muted-foreground/70">
-                        <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                        <span>{isCreatingConversation ? "Starting chat..." : "Thinking..."}</span>
-                      </div>
+              {/* ── Input ── */}
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 pb-4">
+                <div className="pointer-events-auto max-w-3xl mx-auto w-full px-4">
+                  <PromptInput
+                    onSubmit={handleSubmit}
+                    className={cn(
+                      "rounded-2xl border border-border/50 bg-background/90 backdrop-blur-md shadow-lg",
+                      "transition-all duration-200",
+                      "focus-within:border-primary/40 focus-within:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.45)]"
                     )}
-                  </div>
+                  >
+                    <PromptInputTextarea
+                      placeholder="Send a message..."
+                      value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                    />
+                    <PromptInputFooter className="p-2">
+                      <PromptInputTools>
+                        <Suggestions>
+                          {messages.length === 0 && SUGGESTIONS.map((s) => (
+                            <Suggestion
+                              key={s.label}
+                              suggestion={s.prompt}
+                              onClick={() => handleSuggestionClick(s.prompt)}
+                              className="text-xs"
+                            >
+                              <s.icon className="h-3 w-3 mr-1" />
+                              {s.label}
+                            </Suggestion>
+                          ))}
+                        </Suggestions>
+                      </PromptInputTools>
+                      <PromptInputSubmit
+                        status={status === "streaming" ? "streaming" : status === "submitted" ? "submitted" : "ready"}
+                        disabled={!inputText.trim() || status === "streaming" || status === "submitted"}
+                      />
+                    </PromptInputFooter>
+                  </PromptInput>
+                  <p className="text-[11px] text-muted-foreground/50 mt-2 text-center drop-shadow-sm">
+                    Enter to send, Shift+Enter for new line
+                    {credentials?.model && (
+                      <span className="ml-1">
+                        · Using <span className="text-muted-foreground">{credentials.model}</span>
+                      </span>
+                    )}
+                  </p>
                 </div>
               </div>
             </div>
