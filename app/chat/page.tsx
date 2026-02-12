@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
 import { TextStreamChatTransport } from "ai"
 import { useRouter } from "next/navigation"
-import packageJson from "../../package.json"
 
 // shadcn sidebar
 import {
@@ -92,6 +91,8 @@ import {
   CopyIcon,
   Check,
 } from "lucide-react"
+
+const CHAT_RELEASE_TAG = "v0.1"
 
 // ── Settings Panel ───────────────────────────────────────────────────
 
@@ -216,7 +217,6 @@ const SUGGESTIONS = [
 
 export default function ChatPage() {
   const router = useRouter()
-  const releaseVersion = `v${packageJson.version}`
 
   // ── Credentials ──
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
@@ -258,9 +258,9 @@ export default function ChatPage() {
 
   // ── Transport ──
   const transport = useMemo(() => {
-    if (!credentials) return undefined
     return new TextStreamChatTransport({
       api: "/api/chatbot",
+      // Read credentials at send-time to avoid stale/undefined transport state.
       body: () => ({
         baseUrl: credentialsRef.current?.baseUrl,
         apiKey: credentialsRef.current?.apiKey,
@@ -268,7 +268,7 @@ export default function ChatPage() {
         skipSslVerify: credentialsRef.current?.sslVerify === false,
       }),
     })
-  }, [credentials])
+  }, [])
 
   const chatId = useMemo(() => "chatbot-main", [])
 
@@ -417,6 +417,9 @@ export default function ChatPage() {
                 ep<span className="text-primary">.</span>
                 <span className="font-normal text-muted-foreground">chat</span>
               </span>
+              <span className="rounded-full border border-border/60 bg-accent/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {CHAT_RELEASE_TAG}
+              </span>
               <div className="flex-1" />
               <Button
                 variant="ghost"
@@ -552,9 +555,6 @@ export default function ChatPage() {
                 ? conversations.find((c) => c.id === activeConversationId)?.title || "Chat"
                 : "New chat"
               }
-            </span>
-            <span className="hidden sm:inline-flex items-center rounded-full border border-border/60 bg-accent/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {releaseVersion}
             </span>
             <ThemeToggle />
           </header>
