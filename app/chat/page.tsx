@@ -397,12 +397,48 @@ function estimateTokensFromText(text: string) {
   return Math.max(1, Math.round(text.length / 4))
 }
 
-function ChatMessageMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
-  if (isStreaming) {
-    return <div className="whitespace-pre-wrap break-words text-sm leading-6">{content}</div>
+function getApiError(data: unknown) {
+  if (!data || typeof data !== "object") return null
+  const error = (data as { error?: unknown }).error
+  return typeof error === "string" && error.trim() ? error : null
+}
+
+async function parseApiResponseOrThrow(response: Response, endpointLabel: string) {
+  const raw = await response.text()
+  const trimmed = raw.trim()
+
+  if (!trimmed) {
+    if (response.ok) return {}
+    throw new Error(`${endpointLabel} failed (${response.status})`)
   }
+
+  const contentType = response.headers.get("content-type") || ""
+  const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[")
+  const shouldParseAsJson = contentType.includes("application/json") || looksLikeJson
+
+  if (!shouldParseAsJson) {
+    if (trimmed.startsWith("<")) {
+      throw new Error(`${endpointLabel} returned HTML instead of JSON. Check API route/server logs.`)
+    }
+    throw new Error(`${endpointLabel} returned an unexpected response format.`)
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>
+    return { value: parsed }
+  } catch {
+    throw new Error(`${endpointLabel} returned invalid JSON.`)
+  }
+}
+
+function ChatMessageMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   const safeContent = useMemo(() => sanitizeStreamedMarkdown(content), [content])
-  return <MessageResponse>{safeContent}</MessageResponse>
+  return (
+    <MessageResponse className={isStreaming ? "text-sm leading-6" : undefined}>
+      {safeContent}
+    </MessageResponse>
+  )
 }
 
 // ── Suggestion data ──────────────────────────────────────────────────
@@ -641,9 +677,9 @@ export default function ChatPage() {
         },
       }),
     })
-    const data = await response.json()
+    const data = await parseApiResponseOrThrow(response, "Build endpoint")
     if (!response.ok) {
-      throw new Error(data?.error || `Build failed (${response.status})`)
+      throw new Error(getApiError(data) || `Build failed (${response.status})`)
     }
     return data as FocusBuildResult
   }, [credentials])
@@ -676,9 +712,9 @@ export default function ChatPage() {
           },
         }),
       })
-      const data = await response.json()
+      const data = await parseApiResponseOrThrow(response, "Run endpoint")
       if (!response.ok) {
-        throw new Error(data?.error || `Run failed (${response.status})`)
+        throw new Error(getApiError(data) || `Run failed (${response.status})`)
       }
       const runResult = data as FocusRunResult
       setFocusRunResult(runResult)
@@ -743,9 +779,9 @@ export default function ChatPage() {
           },
         }),
       })
-      const data = await response.json()
+      const data = await parseApiResponseOrThrow(response, "Report endpoint")
       if (!response.ok) {
-        throw new Error(data?.error || `Report failed (${response.status})`)
+        throw new Error(getApiError(data) || `Report failed (${response.status})`)
       }
       setFocusReportResult(data as FocusReportResult)
       setFocusResultsTab("report")
@@ -822,9 +858,9 @@ export default function ChatPage() {
           },
         }),
       })
-      const runData = await runResponse.json()
+      const runData = await parseApiResponseOrThrow(runResponse, "Run endpoint")
       if (!runResponse.ok) {
-        throw new Error(runData?.error || `Run failed (${runResponse.status})`)
+        throw new Error(getApiError(runData) || `Run failed (${runResponse.status})`)
       }
       setInsightRunResult(runData as FocusRunResult)
       setInsightQueue([
@@ -848,9 +884,9 @@ export default function ChatPage() {
           },
         }),
       })
-      const buildData = await buildResponse.json()
+      const buildData = await parseApiResponseOrThrow(buildResponse, "Build endpoint")
       if (!buildResponse.ok) {
-        throw new Error(buildData?.error || `Build failed (${buildResponse.status})`)
+        throw new Error(getApiError(buildData) || `Build failed (${buildResponse.status})`)
       }
       setInsightBuildResult(buildData as FocusBuildResult)
       setInsightQueue([
@@ -877,9 +913,9 @@ export default function ChatPage() {
           },
         }),
       })
-      const reportData = await reportResponse.json()
+      const reportData = await parseApiResponseOrThrow(reportResponse, "Report endpoint")
       if (!reportResponse.ok) {
-        throw new Error(reportData?.error || `Report failed (${reportResponse.status})`)
+        throw new Error(getApiError(reportData) || `Report failed (${reportResponse.status})`)
       }
 
       setInsightReport({
