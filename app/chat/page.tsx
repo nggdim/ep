@@ -403,7 +403,16 @@ function getApiError(data: unknown) {
   return typeof error === "string" && error.trim() ? error : null
 }
 
-async function parseApiResponseOrThrow(response: Response, endpointLabel: string) {
+function getApiStringField(data: unknown, key: string) {
+  if (!data || typeof data !== "object") return null
+  const value = (data as Record<string, unknown>)[key]
+  return typeof value === "string" ? value : null
+}
+
+async function parseApiResponseOrThrow(
+  response: Response,
+  endpointLabel: string
+): Promise<Record<string, unknown>> {
   const raw = await response.text()
   const trimmed = raw.trim()
 
@@ -426,7 +435,7 @@ async function parseApiResponseOrThrow(response: Response, endpointLabel: string
   try {
     const parsed = JSON.parse(trimmed)
     if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>
-    return { value: parsed }
+    return { value: parsed } as Record<string, unknown>
   } catch {
     throw new Error(`${endpointLabel} returned invalid JSON.`)
   }
@@ -919,8 +928,8 @@ export default function ChatPage() {
       }
 
       setInsightReport({
-        title: reportData?.title || "Insights Report",
-        reportMarkdown: reportData?.reportMarkdown || "No report content generated.",
+        title: getApiStringField(reportData, "title") || "Insights Report",
+        reportMarkdown: getApiStringField(reportData, "reportMarkdown") || "No report content generated.",
         messageId,
       })
       setInsightQueue([
