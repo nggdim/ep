@@ -448,6 +448,7 @@ export default function ChatPage() {
   }, [messages])
 
   const [isFocusModeOpen, setIsFocusModeOpen] = useState(false)
+  const [showRawResponses, setShowRawResponses] = useState(false)
   const [selectedCodeBlockId, setSelectedCodeBlockId] = useState<string | null>(null)
   const [focusEditorCode, setFocusEditorCode] = useState("")
   const [focusSqlResult, setFocusSqlResult] = useState<{
@@ -933,6 +934,14 @@ export default function ChatPage() {
               <Code className="h-3.5 w-3.5" />
               Focus mode
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setShowRawResponses((prev) => !prev)}
+            >
+              {showRawResponses ? "Hide raw response" : "View raw response"}
+            </Button>
             <ThemeToggle />
           </header>
 
@@ -976,7 +985,19 @@ export default function ChatPage() {
                           <Message from={message.role} className={message.role === "assistant" ? "max-w-full" : undefined}>
                             <MessageContent className={message.role === "assistant" ? "w-full" : undefined}>
                               {textContent ? (
-                                <ChatMessageMarkdown content={textContent} />
+                                <>
+                                  <ChatMessageMarkdown content={textContent} />
+                                  {message.role === "assistant" && showRawResponses && (
+                                    <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-3">
+                                      <p className="mb-2 text-[11px] font-medium text-muted-foreground">
+                                        Raw response
+                                      </p>
+                                      <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
+                                        {textContent}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </>
                               ) : null}
                             </MessageContent>
                           </Message>
