@@ -65,17 +65,19 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 // Lib
 import {
   getOpenAICredentials,
-  getDremioCredentials,
   saveOpenAICredentials,
   type OpenAICredentials,
 } from "@/lib/credential-store"
 import { useChatConversations } from "@/lib/use-chat-history"
 import { syncChatMessages, getChatMessages } from "@/lib/db"
 import { cn } from "@/lib/utils"
+import { FocusChartRenderer } from "@/components/focus/chart-renderer"
+import type { FocusBuildResult, FocusRunResult } from "@/lib/focus-types"
 
 // Icons
 import {
@@ -451,17 +453,17 @@ export default function ChatPage() {
   const [showRawResponses, setShowRawResponses] = useState(false)
   const [selectedCodeBlockId, setSelectedCodeBlockId] = useState<string | null>(null)
   const [focusEditorCode, setFocusEditorCode] = useState("")
-  const [focusSqlResult, setFocusSqlResult] = useState<{
-    rowCount: number
-    schema?: Array<{ name: string; type: { name: string } }>
-    rows?: Array<Record<string, unknown>>
-    error?: string
-    details?: string
-  } | null>(null)
-  const [isRunningFocusSql, setIsRunningFocusSql] = useState(false)
+  const [focusRunResult, setFocusRunResult] = useState<FocusRunResult | null>(null)
+  const [focusBuildResult, setFocusBuildResult] = useState<FocusBuildResult | null>(null)
+  const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build">("run")
+  const [isRunningMock, setIsRunningMock] = useState(false)
+  const [isBuildingViz, setIsBuildingViz] = useState(false)
+  const [focusError, setFocusError] = useState<string | null>(null)
   const [focusCopied, setFocusCopied] = useState(false)
   const [codeSummaries, setCodeSummaries] = useState<Record<string, string>>({})
   const [summarizingIds, setSummarizingIds] = useState<Record<string, boolean>>({})
+  const focusEditorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const focusEditorHighlightRef = useRef<HTMLDivElement | null>(null)
 
   const selectedCodeBlock = useMemo(
     () => assistantCodeBlocks.find((b) => b.id === selectedCodeBlockId) || null,
@@ -478,14 +480,20 @@ export default function ChatPage() {
       const next = assistantCodeBlocks[assistantCodeBlocks.length - 1]
       setSelectedCodeBlockId(next.id)
       setFocusEditorCode(next.code)
-      setFocusSqlResult(null)
+      setFocusRunResult(null)
+      setFocusBuildResult(null)
+      setFocusResultsTab("run")
+      setFocusError(null)
     }
   }, [assistantCodeBlocks, selectedCodeBlockId, isFocusModeOpen])
 
   useEffect(() => {
     if (!selectedCodeBlock) return
     setFocusEditorCode(selectedCodeBlock.code)
-    setFocusSqlResult(null)
+    setFocusRunResult(null)
+    setFocusBuildResult(null)
+    setFocusResultsTab("run")
+    setFocusError(null)
   }, [selectedCodeBlock?.id])
 
   const openFocusMode = useCallback((blockId?: string) => {
@@ -495,65 +503,90 @@ export default function ChatPage() {
     const targetBlock = assistantCodeBlocks.find((b) => b.id === targetId)
     if (targetBlock) {
       setFocusEditorCode(targetBlock.code)
-      setFocusSqlResult(null)
+      setFocusRunResult(null)
+      setFocusBuildResult(null)
+      setFocusResultsTab("run")
+      setFocusError(null)
     }
     setIsFocusModeOpen(true)
   }, [assistantCodeBlocks, selectedCodeBlockId])
 
-  const focusLanguageIsSql = useMemo(() => {
-    const lang = selectedCodeBlock?.language || ""
-    return ["sql", "postgresql", "mysql", "sqlite", "tsql", "plsql"].includes(lang)
-  }, [selectedCodeBlock?.language])
-
-  const runSqlInFocusMode = useCallback(async () => {
-    const sql = focusEditorCode.trim()
-    if (!sql) return
-    const creds = getDremioCredentials()
-    if (!creds?.endpoint || !creds?.pat) {
-      setFocusSqlResult({
-        rowCount: 0,
-        error: "Dremio credentials not configured",
-        details: "Configure Dremio credentials in Workbench settings to run SQL from chat focus mode.",
-      })
+  const runMockData = useCallback(async () => {
+    if (!selectedCodeBlock) return
+    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
+      setFocusError("Configure API credentials before running focus mode agents.")
       return
     }
 
-    setIsRunningFocusSql(true)
-    setFocusSqlResult(null)
+    setIsRunningMock(true)
+    setFocusError(null)
+    setFocusBuildResult(null)
     try {
-      const response = await fetch("/api/dremio/sql", {
+      const response = await fetch("/api/focus/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          endpoint: creds.endpoint,
-          pat: creds.pat,
-          sql,
-          sslVerify: creds.sslVerify,
+          language: selectedCodeBlock.language,
+          code: focusEditorCode,
+          rowLimit: 50,
+          credentials: {
+            baseUrl: credentials.baseUrl,
+            apiKey: credentials.apiKey,
+            model: credentials.model,
+            urlMode: credentials.urlMode || "base",
+            skipSslVerify: credentials.sslVerify === false,
+          },
         }),
       })
       const data = await response.json()
       if (!response.ok) {
-        setFocusSqlResult({
-          rowCount: 0,
-          error: data?.error || `SQL execution failed (${response.status})`,
-          details: data?.details,
-        })
-        return
+        throw new Error(data?.error || `Run failed (${response.status})`)
       }
-      setFocusSqlResult({
-        rowCount: data.rowCount ?? 0,
-        schema: data.schema,
-        rows: data.rows,
-      })
+      setFocusRunResult(data as FocusRunResult)
+      setFocusResultsTab("run")
     } catch (error) {
-      setFocusSqlResult({
-        rowCount: 0,
-        error: error instanceof Error ? error.message : "Unknown SQL execution error",
-      })
+      setFocusError(error instanceof Error ? error.message : "Run failed")
     } finally {
-      setIsRunningFocusSql(false)
+      setIsRunningMock(false)
     }
-  }, [focusEditorCode])
+  }, [credentials, focusEditorCode, selectedCodeBlock])
+
+  const buildVisualization = useCallback(async () => {
+    if (!focusRunResult) return
+    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
+      setFocusError("Configure API credentials before building visualization.")
+      return
+    }
+
+    setIsBuildingViz(true)
+    setFocusError(null)
+    try {
+      const response = await fetch("/api/focus/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runResult: focusRunResult,
+          credentials: {
+            baseUrl: credentials.baseUrl,
+            apiKey: credentials.apiKey,
+            model: credentials.model,
+            urlMode: credentials.urlMode || "base",
+            skipSslVerify: credentials.sslVerify === false,
+          },
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data?.error || `Build failed (${response.status})`)
+      }
+      setFocusBuildResult(data as FocusBuildResult)
+      setFocusResultsTab("build")
+    } catch (error) {
+      setFocusError(error instanceof Error ? error.message : "Build failed")
+    } finally {
+      setIsBuildingViz(false)
+    }
+  }, [credentials, focusRunResult])
 
   const copyFocusCode = useCallback(async () => {
     if (!focusEditorCode.trim()) return
@@ -561,6 +594,12 @@ export default function ChatPage() {
     setFocusCopied(true)
     setTimeout(() => setFocusCopied(false), 1200)
   }, [focusEditorCode])
+
+  const syncFocusEditorScroll = useCallback(() => {
+    if (!focusEditorTextareaRef.current || !focusEditorHighlightRef.current) return
+    focusEditorHighlightRef.current.scrollTop = focusEditorTextareaRef.current.scrollTop
+    focusEditorHighlightRef.current.scrollLeft = focusEditorTextareaRef.current.scrollLeft
+  }, [])
 
   useEffect(() => {
     if (!isFocusModeOpen || assistantCodeBlocks.length === 0) return
@@ -1132,8 +1171,12 @@ export default function ChatPage() {
         onOpenChange={(open) => {
           setIsFocusModeOpen(open)
           if (!open) {
-            setFocusSqlResult(null)
-            setIsRunningFocusSql(false)
+            setFocusRunResult(null)
+            setFocusBuildResult(null)
+            setFocusResultsTab("run")
+            setFocusError(null)
+            setIsRunningMock(false)
+            setIsBuildingViz(false)
           }
         }}
       >
@@ -1182,27 +1225,41 @@ export default function ChatPage() {
                       Editing <span className="text-foreground">{selectedCodeBlock.language}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {focusLanguageIsSql && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs gap-1.5"
-                          onClick={runSqlInFocusMode}
-                          disabled={isRunningFocusSql || !focusEditorCode.trim()}
-                        >
-                          {isRunningFocusSql ? (
-                            <>
-                              <Spinner className="h-3.5 w-3.5" />
-                              Running...
-                            </>
-                          ) : (
-                            <>
-                              <Play className="h-3.5 w-3.5" />
-                              Run SQL
-                            </>
-                          )}
-                        </Button>
-                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs gap-1.5"
+                        onClick={runMockData}
+                        disabled={isRunningMock || !focusEditorCode.trim()}
+                      >
+                        {isRunningMock ? (
+                          <>
+                            <Spinner className="h-3.5 w-3.5" />
+                            Running...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="h-3.5 w-3.5" />
+                            Run
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs gap-1.5"
+                        onClick={buildVisualization}
+                        disabled={isBuildingViz || !focusRunResult}
+                      >
+                        {isBuildingViz ? (
+                          <>
+                            <Spinner className="h-3.5 w-3.5" />
+                            Building...
+                          </>
+                        ) : (
+                          "Build"
+                        )}
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"
@@ -1215,64 +1272,125 @@ export default function ChatPage() {
                     </div>
                   </div>
 
-                  <textarea
-                    value={focusEditorCode}
-                    onChange={(e) => setFocusEditorCode(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (focusLanguageIsSql && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                        e.preventDefault()
-                        runSqlInFocusMode()
-                      }
-                    }}
-                    className="flex-1 min-h-0 resize-none border-0 bg-background px-4 py-3 font-mono text-sm leading-6 outline-none"
-                    spellCheck={false}
-                  />
-
-                  {focusSqlResult && (
-                    <div className="max-h-[34vh] overflow-auto border-t border-border/50">
-                      <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/40">
-                        {focusSqlResult.error
-                          ? "SQL execution error"
-                          : `${focusSqlResult.rowCount} row${focusSqlResult.rowCount === 1 ? "" : "s"} returned`}
-                      </div>
-                      {focusSqlResult.error ? (
-                        <div className="p-4 text-sm">
-                          <p className="text-destructive">{focusSqlResult.error}</p>
-                          {focusSqlResult.details && (
-                            <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">
-                              {focusSqlResult.details}
-                            </pre>
-                          )}
-                        </div>
-                      ) : focusSqlResult.rows && focusSqlResult.rows.length > 0 ? (
-                        <table className="w-full text-xs">
-                          <thead className="sticky top-0 bg-card/80 backdrop-blur">
-                            <tr className="border-b border-border/50">
-                              {focusSqlResult.schema?.map((col) => (
-                                <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">
-                                  {col.name}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {focusSqlResult.rows.map((row, rowIdx) => (
-                              <tr key={rowIdx} className="border-b border-border/30">
-                                {focusSqlResult.schema?.map((col) => (
-                                  <td key={`${rowIdx}-${col.name}`} className="px-3 py-2 font-mono whitespace-nowrap">
-                                    {String(row[col.name] ?? "NULL")}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <div className="p-4 text-xs text-muted-foreground">
-                          Query executed successfully. No rows returned.
-                        </div>
-                      )}
+                  <div className="relative min-h-[34vh] border-t border-border/20">
+                    <div
+                      ref={focusEditorHighlightRef}
+                      className="absolute inset-0 overflow-auto px-4 py-3 pointer-events-none [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-0"
+                    >
+                      <MessageResponse>{`\
+\`\`\`${selectedCodeBlock.language}
+${focusEditorCode || " "}
+\`\`\`
+`}</MessageResponse>
                     </div>
+                    <textarea
+                      ref={focusEditorTextareaRef}
+                      value={focusEditorCode}
+                      onChange={(e) => setFocusEditorCode(e.target.value)}
+                      onScroll={syncFocusEditorScroll}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                          e.preventDefault()
+                          runMockData()
+                        }
+                      }}
+                      className="absolute inset-0 resize-none border-0 bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-foreground outline-none selection:bg-accent/30"
+                      spellCheck={false}
+                      wrap="off"
+                    />
+                  </div>
+
+                  {focusError && (
+                    <div className="border-t border-border/50 p-3 text-xs text-destructive">
+                      {focusError}
+                    </div>
+                  )}
+
+                  {(focusRunResult || focusBuildResult) && (
+                    <Tabs
+                      value={focusResultsTab}
+                      onValueChange={(value) => setFocusResultsTab(value as "run" | "build")}
+                      className="border-t border-border/50"
+                    >
+                      <div className="px-3 py-2 border-b border-border/50 bg-card/40">
+                        <TabsList className="h-8">
+                          <TabsTrigger value="run" className="text-xs px-3">
+                            Run Results
+                          </TabsTrigger>
+                          <TabsTrigger value="build" className="text-xs px-3" disabled={!focusBuildResult}>
+                            Build Results
+                          </TabsTrigger>
+                        </TabsList>
+                      </div>
+
+                      <TabsContent value="run" className="max-h-[34vh] overflow-auto">
+                        {focusRunResult ? (
+                          <>
+                            <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/20">
+                              {focusRunResult.summary} · {focusRunResult.rows.length} mocked row{focusRunResult.rows.length === 1 ? "" : "s"}
+                            </div>
+                            {focusRunResult.rows.length > 0 ? (
+                              <table className="w-full text-xs">
+                                <thead className="sticky top-0 bg-card/80 backdrop-blur">
+                                  <tr className="border-b border-border/50">
+                                    {focusRunResult.columns.map((col) => (
+                                      <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">
+                                        {col.name}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {focusRunResult.rows.map((row, rowIdx) => (
+                                    <tr key={rowIdx} className="border-b border-border/30">
+                                      {focusRunResult.columns.map((col) => (
+                                        <td key={`${rowIdx}-${col.name}`} className="px-3 py-2 font-mono whitespace-nowrap">
+                                          {String(row[col.name] ?? "NULL")}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <div className="p-4 text-xs text-muted-foreground">
+                                Query executed successfully. No rows returned.
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="p-4 text-xs text-muted-foreground">
+                            Run the mock agent to view table output.
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      <TabsContent value="build" className="max-h-[34vh] overflow-auto">
+                        {focusBuildResult && focusRunResult ? (
+                          <div className="p-4 space-y-3">
+                            <div className="text-xs text-muted-foreground">
+                              {focusBuildResult.chartSpec.title} · {focusBuildResult.rationale}
+                            </div>
+                            <FocusChartRenderer
+                              spec={focusBuildResult.chartSpec}
+                              rows={focusRunResult.rows}
+                            />
+                            <div className="rounded-md border border-border/50 bg-card/30 p-3">
+                              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Recharts code
+                              </p>
+                              <pre className="overflow-auto text-xs leading-5 font-mono whitespace-pre">
+                                <code>{focusBuildResult.chartCode}</code>
+                              </pre>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 text-xs text-muted-foreground">
+                            Build visualization after a successful run.
+                          </div>
+                        )}
+                      </TabsContent>
+                    </Tabs>
                   )}
                 </>
               ) : (
