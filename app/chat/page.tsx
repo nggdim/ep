@@ -30,6 +30,13 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
 import {
+  Queue,
+  QueueItem,
+  QueueItemContent,
+  QueueItemIndicator,
+  QueueList,
+} from "@/components/ai-elements/queue"
+import {
   Message,
   MessageContent,
   MessageResponse,
@@ -77,7 +84,7 @@ import { useChatConversations } from "@/lib/use-chat-history"
 import { syncChatMessages, getChatMessages } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { FocusChartRenderer } from "@/components/focus/chart-renderer"
-import type { FocusBuildResult, FocusRunResult } from "@/lib/focus-types"
+import type { FocusBuildResult, FocusReportResult, FocusRunResult } from "@/lib/focus-types"
 
 // Icons
 import {
@@ -98,6 +105,8 @@ import {
   CopyIcon,
   Check,
   Play,
+  Eye,
+  EyeOff,
 } from "lucide-react"
 
 const CHAT_RELEASE_TAG = "v0.1"
@@ -324,6 +333,21 @@ type ExtractedCodeBlock = {
   indexInMessage: number
 }
 
+type InsightQueueStatus = "pending" | "running" | "completed" | "error"
+type InsightQueueItem = {
+  id: "run" | "build" | "report"
+  label: string
+  status: InsightQueueStatus
+}
+
+function createInitialInsightQueue(): InsightQueueItem[] {
+  return [
+    { id: "run", label: "Data agent", status: "pending" },
+    { id: "build", label: "Visualization agent", status: "pending" },
+    { id: "report", label: "Insights agent", status: "pending" },
+  ]
+}
+
 function sanitizeStreamedMarkdown(content: string) {
   // While streaming, a fence can transiently end as ```s / ```sq before newline.
   // That can make highlighters treat it as an unknown language token.
@@ -450,20 +474,35 @@ export default function ChatPage() {
   }, [messages])
 
   const [isFocusModeOpen, setIsFocusModeOpen] = useState(false)
-  const [showRawResponses, setShowRawResponses] = useState(false)
+  const [rawResponseVisibility, setRawResponseVisibility] = useState<Record<string, boolean>>({})
   const [selectedCodeBlockId, setSelectedCodeBlockId] = useState<string | null>(null)
   const [focusEditorCode, setFocusEditorCode] = useState("")
   const [focusRunResult, setFocusRunResult] = useState<FocusRunResult | null>(null)
   const [focusBuildResult, setFocusBuildResult] = useState<FocusBuildResult | null>(null)
-  const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build">("run")
+  const [focusReportResult, setFocusReportResult] = useState<FocusReportResult | null>(null)
+  const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build" | "report">("run")
   const [isRunningMock, setIsRunningMock] = useState(false)
   const [isBuildingViz, setIsBuildingViz] = useState(false)
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false)
+  const [autoBuildAfterRun, setAutoBuildAfterRun] = useState(true)
   const [focusError, setFocusError] = useState<string | null>(null)
   const [focusCopied, setFocusCopied] = useState(false)
   const [codeSummaries, setCodeSummaries] = useState<Record<string, string>>({})
   const [summarizingIds, setSummarizingIds] = useState<Record<string, boolean>>({})
   const focusEditorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const focusEditorHighlightRef = useRef<HTMLDivElement | null>(null)
+  const [isInsightSheetOpen, setIsInsightSheetOpen] = useState(false)
+  const [isGeneratingInsight, setIsGeneratingInsight] = useState(false)
+  const [insightProgressLabel, setInsightProgressLabel] = useState("")
+  const [insightQueue, setInsightQueue] = useState<InsightQueueItem[]>(createInitialInsightQueue)
+  const [insightReport, setInsightReport] = useState<{
+    title: string
+    reportMarkdown: string
+    messageId: string
+  } | null>(null)
+  const [insightRunResult, setInsightRunResult] = useState<FocusRunResult | null>(null)
+  const [insightBuildResult, setInsightBuildResult] = useState<FocusBuildResult | null>(null)
+  const [insightError, setInsightError] = useState<string | null>(null)
 
   const selectedCodeBlock = useMemo(
     () => assistantCodeBlocks.find((b) => b.id === selectedCodeBlockId) || null,
@@ -482,6 +521,7 @@ export default function ChatPage() {
       setFocusEditorCode(next.code)
       setFocusRunResult(null)
       setFocusBuildResult(null)
+      setFocusReportResult(null)
       setFocusResultsTab("run")
       setFocusError(null)
     }
@@ -492,6 +532,7 @@ export default function ChatPage() {
     setFocusEditorCode(selectedCodeBlock.code)
     setFocusRunResult(null)
     setFocusBuildResult(null)
+    setFocusReportResult(null)
     setFocusResultsTab("run")
     setFocusError(null)
   }, [selectedCodeBlock?.id])
@@ -505,11 +546,38 @@ export default function ChatPage() {
       setFocusEditorCode(targetBlock.code)
       setFocusRunResult(null)
       setFocusBuildResult(null)
+      setFocusReportResult(null)
       setFocusResultsTab("run")
       setFocusError(null)
     }
     setIsFocusModeOpen(true)
   }, [assistantCodeBlocks, selectedCodeBlockId])
+
+  const requestBuildForRunResult = useCallback(async (runResult: FocusRunResult) => {
+    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
+      throw new Error("Configure API credentials before building visualization.")
+    }
+
+    const response = await fetch("/api/focus/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runResult,
+        credentials: {
+          baseUrl: credentials.baseUrl,
+          apiKey: credentials.apiKey,
+          model: credentials.model,
+          urlMode: credentials.urlMode || "base",
+          skipSslVerify: credentials.sslVerify === false,
+        },
+      }),
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      throw new Error(data?.error || `Build failed (${response.status})`)
+    }
+    return data as FocusBuildResult
+  }, [credentials])
 
   const runMockData = useCallback(async () => {
     if (!selectedCodeBlock) return
@@ -521,6 +589,7 @@ export default function ChatPage() {
     setIsRunningMock(true)
     setFocusError(null)
     setFocusBuildResult(null)
+    setFocusReportResult(null)
     try {
       const response = await fetch("/api/focus/run", {
         method: "POST",
@@ -542,30 +611,60 @@ export default function ChatPage() {
       if (!response.ok) {
         throw new Error(data?.error || `Run failed (${response.status})`)
       }
-      setFocusRunResult(data as FocusRunResult)
+      const runResult = data as FocusRunResult
+      setFocusRunResult(runResult)
       setFocusResultsTab("run")
+
+      if (autoBuildAfterRun) {
+        setIsBuildingViz(true)
+        try {
+          const buildResult = await requestBuildForRunResult(runResult)
+          setFocusBuildResult(buildResult)
+          setFocusResultsTab("build")
+        } finally {
+          setIsBuildingViz(false)
+        }
+      }
     } catch (error) {
       setFocusError(error instanceof Error ? error.message : "Run failed")
     } finally {
       setIsRunningMock(false)
     }
-  }, [credentials, focusEditorCode, selectedCodeBlock])
+  }, [autoBuildAfterRun, credentials, focusEditorCode, requestBuildForRunResult, selectedCodeBlock])
 
   const buildVisualization = useCallback(async () => {
     if (!focusRunResult) return
-    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
-      setFocusError("Configure API credentials before building visualization.")
-      return
-    }
-
     setIsBuildingViz(true)
     setFocusError(null)
     try {
-      const response = await fetch("/api/focus/build", {
+      const buildResult = await requestBuildForRunResult(focusRunResult)
+      setFocusBuildResult(buildResult)
+      setFocusResultsTab("build")
+    } catch (error) {
+      setFocusError(error instanceof Error ? error.message : "Build failed")
+    } finally {
+      setIsBuildingViz(false)
+    }
+  }, [focusRunResult, requestBuildForRunResult])
+
+  const generateReport = useCallback(async () => {
+    if (!selectedCodeBlock || !focusRunResult) return
+    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
+      setFocusError("Configure API credentials before generating report.")
+      return
+    }
+
+    setIsGeneratingReport(true)
+    setFocusError(null)
+    try {
+      const response = await fetch("/api/focus/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          language: selectedCodeBlock.language,
+          code: focusEditorCode,
           runResult: focusRunResult,
+          buildResult: focusBuildResult || undefined,
           credentials: {
             baseUrl: credentials.baseUrl,
             apiKey: credentials.apiKey,
@@ -577,16 +676,16 @@ export default function ChatPage() {
       })
       const data = await response.json()
       if (!response.ok) {
-        throw new Error(data?.error || `Build failed (${response.status})`)
+        throw new Error(data?.error || `Report failed (${response.status})`)
       }
-      setFocusBuildResult(data as FocusBuildResult)
-      setFocusResultsTab("build")
+      setFocusReportResult(data as FocusReportResult)
+      setFocusResultsTab("report")
     } catch (error) {
-      setFocusError(error instanceof Error ? error.message : "Build failed")
+      setFocusError(error instanceof Error ? error.message : "Report failed")
     } finally {
-      setIsBuildingViz(false)
+      setIsGeneratingReport(false)
     }
-  }, [credentials, focusRunResult])
+  }, [credentials, focusBuildResult, focusEditorCode, focusRunResult, selectedCodeBlock])
 
   const copyFocusCode = useCallback(async () => {
     if (!focusEditorCode.trim()) return
@@ -594,6 +693,139 @@ export default function ChatPage() {
     setFocusCopied(true)
     setTimeout(() => setFocusCopied(false), 1200)
   }, [focusEditorCode])
+
+  const toggleRawResponse = useCallback((messageId: string) => {
+    setRawResponseVisibility((prev) => ({
+      ...prev,
+      [messageId]: !prev[messageId],
+    }))
+  }, [])
+
+  const generateChatInsightReport = useCallback(async (messageId: string, assistantResponse: string, userPrompt?: string) => {
+    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
+      setInsightError("Configure API credentials before generating an insights report.")
+      setIsInsightSheetOpen(true)
+      return
+    }
+
+    const codeBlocks = extractCodeBlocks(sanitizeStreamedMarkdown(assistantResponse), messageId)
+    const firstCodeBlock = codeBlocks[0]
+    if (!firstCodeBlock) {
+      setInsightError("No code block found in this response. Insights report requires code output data.")
+      setIsInsightSheetOpen(true)
+      return
+    }
+
+    setIsInsightSheetOpen(true)
+    setIsGeneratingInsight(true)
+    setInsightProgressLabel("Running data agent...")
+    setInsightQueue([
+      { id: "run", label: "Data agent", status: "running" },
+      { id: "build", label: "Visualization agent", status: "pending" },
+      { id: "report", label: "Insights agent", status: "pending" },
+    ])
+    setInsightError(null)
+    setInsightReport(null)
+    setInsightRunResult(null)
+    setInsightBuildResult(null)
+    try {
+      const runResponse = await fetch("/api/focus/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          language: firstCodeBlock.language,
+          code: firstCodeBlock.code,
+          intent: userPrompt,
+          rowLimit: 50,
+          credentials: {
+            baseUrl: credentials.baseUrl,
+            apiKey: credentials.apiKey,
+            model: credentials.model,
+            urlMode: credentials.urlMode || "base",
+            skipSslVerify: credentials.sslVerify === false,
+          },
+        }),
+      })
+      const runData = await runResponse.json()
+      if (!runResponse.ok) {
+        throw new Error(runData?.error || `Run failed (${runResponse.status})`)
+      }
+      setInsightRunResult(runData as FocusRunResult)
+      setInsightQueue([
+        { id: "run", label: "Data agent", status: "completed" },
+        { id: "build", label: "Visualization agent", status: "running" },
+        { id: "report", label: "Insights agent", status: "pending" },
+      ])
+
+      setInsightProgressLabel("Building visualization context...")
+      const buildResponse = await fetch("/api/focus/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runResult: runData,
+          credentials: {
+            baseUrl: credentials.baseUrl,
+            apiKey: credentials.apiKey,
+            model: credentials.model,
+            urlMode: credentials.urlMode || "base",
+            skipSslVerify: credentials.sslVerify === false,
+          },
+        }),
+      })
+      const buildData = await buildResponse.json()
+      if (!buildResponse.ok) {
+        throw new Error(buildData?.error || `Build failed (${buildResponse.status})`)
+      }
+      setInsightBuildResult(buildData as FocusBuildResult)
+      setInsightQueue([
+        { id: "run", label: "Data agent", status: "completed" },
+        { id: "build", label: "Visualization agent", status: "completed" },
+        { id: "report", label: "Insights agent", status: "running" },
+      ])
+
+      setInsightProgressLabel("Generating insights report...")
+      const reportResponse = await fetch("/api/focus/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          language: firstCodeBlock.language,
+          code: firstCodeBlock.code,
+          runResult: runData,
+          buildResult: buildData,
+          credentials: {
+            baseUrl: credentials.baseUrl,
+            apiKey: credentials.apiKey,
+            model: credentials.model,
+            urlMode: credentials.urlMode || "base",
+            skipSslVerify: credentials.sslVerify === false,
+          },
+        }),
+      })
+      const reportData = await reportResponse.json()
+      if (!reportResponse.ok) {
+        throw new Error(reportData?.error || `Report failed (${reportResponse.status})`)
+      }
+
+      setInsightReport({
+        title: reportData?.title || "Insights Report",
+        reportMarkdown: reportData?.reportMarkdown || "No report content generated.",
+        messageId,
+      })
+      setInsightQueue([
+        { id: "run", label: "Data agent", status: "completed" },
+        { id: "build", label: "Visualization agent", status: "completed" },
+        { id: "report", label: "Insights agent", status: "completed" },
+      ])
+    } catch (error) {
+      setInsightError(error instanceof Error ? error.message : "Failed to generate insights report")
+      setInsightQueue((prev) => prev.map((item) => (
+        item.status === "running" ? { ...item, status: "error" } : item
+      )))
+    } finally {
+      setIsGeneratingInsight(false)
+      setInsightProgressLabel("")
+    }
+  }, [credentials])
 
   const syncFocusEditorScroll = useCallback(() => {
     if (!focusEditorTextareaRef.current || !focusEditorHighlightRef.current) return
@@ -963,24 +1195,6 @@ export default function ChatPage() {
                 : "New chat"
               }
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1.5"
-              onClick={() => openFocusMode()}
-              disabled={assistantCodeBlocks.length === 0}
-            >
-              <Code className="h-3.5 w-3.5" />
-              Focus mode
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setShowRawResponses((prev) => !prev)}
-            >
-              {showRawResponses ? "Hide raw response" : "View raw response"}
-            </Button>
             <ThemeToggle />
           </header>
 
@@ -1015,6 +1229,19 @@ export default function ChatPage() {
                         ?.filter((p) => p.type === "text")
                         .map((p) => (p as { type: "text"; text: string }).text)
                         .join("") || ""
+                      const previousUserMessageText = (() => {
+                        for (let i = idx - 1; i >= 0; i--) {
+                          const candidate = messages[i]
+                          if (candidate.role !== "user") continue
+                          return (
+                            candidate.parts
+                              ?.filter((p) => p.type === "text")
+                              .map((p) => (p as { type: "text"; text: string }).text)
+                              .join("") || ""
+                          )
+                        }
+                        return ""
+                      })()
                       const messageCodeBlocks = message.role === "assistant"
                         ? extractCodeBlocks(sanitizeStreamedMarkdown(textContent), message.id)
                         : []
@@ -1026,10 +1253,10 @@ export default function ChatPage() {
                               {textContent ? (
                                 <>
                                   <ChatMessageMarkdown content={textContent} />
-                                  {message.role === "assistant" && showRawResponses && (
+                                  {rawResponseVisibility[message.id] && (
                                     <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-3">
                                       <p className="mb-2 text-[11px] font-medium text-muted-foreground">
-                                        Raw response
+                                        {message.role === "assistant" ? "Raw response" : "Raw input"}
                                       </p>
                                       <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
                                         {textContent}
@@ -1039,33 +1266,65 @@ export default function ChatPage() {
                                 </>
                               ) : null}
                             </MessageContent>
-                          </Message>
-                          {message.role === "assistant" && textContent && (
-                            <MessageActions className="mt-1 ml-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <MessageAction
-                                tooltip="Copy"
-                                onClick={() => handleCopyMessage(textContent, message.id)}
+                            {textContent && (
+                              <MessageActions
+                                className={cn(
+                                  "mt-1",
+                                  message.role === "user" ? "justify-end" : "ml-0"
+                                )}
                               >
-                                {copiedMessageId === message.id
-                                  ? <Check className="h-3 w-3" />
-                                  : <CopyIcon className="h-3 w-3" />
-                                }
-                              </MessageAction>
-                              {idx === messages.length - 1 && (
-                                <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
-                                  <RefreshCcw className="h-3 w-3" />
-                                </MessageAction>
-                              )}
-                              {messageCodeBlocks.length > 0 && (
                                 <MessageAction
-                                  tooltip="Open in focus mode"
-                                  onClick={() => openFocusMode(messageCodeBlocks[0].id)}
+                                  tooltip="Copy"
+                                  onClick={() => handleCopyMessage(textContent, message.id)}
                                 >
-                                  <Code className="h-3 w-3" />
+                                  {copiedMessageId === message.id
+                                    ? <Check className="h-3 w-3" />
+                                    : <CopyIcon className="h-3 w-3" />
+                                  }
                                 </MessageAction>
-                              )}
-                            </MessageActions>
-                          )}
+                                {idx === messages.length - 1 && (
+                                  message.role === "assistant" ? (
+                                    <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
+                                      <RefreshCcw className="h-3 w-3" />
+                                    </MessageAction>
+                                  ) : null
+                                )}
+                                <MessageAction
+                                  tooltip={
+                                    rawResponseVisibility[message.id]
+                                      ? message.role === "assistant"
+                                        ? "Hide raw response"
+                                        : "Hide raw input"
+                                      : message.role === "assistant"
+                                        ? "View raw response"
+                                        : "View raw input"
+                                  }
+                                  onClick={() => toggleRawResponse(message.id)}
+                                >
+                                  {rawResponseVisibility[message.id]
+                                    ? <EyeOff className="h-3 w-3" />
+                                    : <Eye className="h-3 w-3" />
+                                  }
+                                </MessageAction>
+                                {message.role === "assistant" && (
+                                  <MessageAction
+                                    tooltip="Generate report from output data"
+                                    onClick={() => generateChatInsightReport(message.id, textContent, previousUserMessageText)}
+                                  >
+                                    <Sparkles className="h-3 w-3" />
+                                  </MessageAction>
+                                )}
+                                {messageCodeBlocks.length > 0 && (
+                                  <MessageAction
+                                    tooltip="Open in focus mode"
+                                    onClick={() => openFocusMode(messageCodeBlocks[0].id)}
+                                  >
+                                    <Code className="h-3 w-3" />
+                                  </MessageAction>
+                                )}
+                              </MessageActions>
+                            )}
+                          </Message>
                         </div>
                       )
                     })
@@ -1167,16 +1426,88 @@ export default function ChatPage() {
       </SidebarProvider>
 
       <Sheet
+        open={isInsightSheetOpen}
+        onOpenChange={(open) => {
+          setIsInsightSheetOpen(open)
+          if (!open) {
+            setInsightError(null)
+            setIsGeneratingInsight(false)
+            setInsightProgressLabel("")
+            setInsightQueue(createInitialInsightQueue())
+            setInsightRunResult(null)
+            setInsightBuildResult(null)
+          }
+        }}
+      >
+        <SheetContent side="right" className="!w-screen !max-w-none sm:!max-w-none sm:!w-screen !h-screen border-l-0 p-0 gap-0">
+          <SheetHeader className="border-b border-border/50 px-5 py-4">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-4 w-4 text-primary" />
+              {insightReport?.title || "Insights Report"}
+            </SheetTitle>
+            <SheetDescription>
+              Auto-generated analysis from this response and its chat context.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-auto p-6">
+            <Queue className="mx-auto mb-4 w-full max-w-5xl p-3">
+              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">Agent queue</p>
+              <QueueList>
+                <ul className="space-y-1.5 pr-2">
+                  {insightQueue.map((item) => (
+                    <QueueItem key={item.id}>
+                      <QueueItemIndicator status={item.status} />
+                      <QueueItemContent status={item.status}>{item.label}</QueueItemContent>
+                    </QueueItem>
+                  ))}
+                </ul>
+              </QueueList>
+            </Queue>
+            {insightError ? (
+              <div className="mx-auto w-full max-w-5xl rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                {insightError}
+              </div>
+            ) : insightReport ? (
+              <div className="mx-auto w-full max-w-5xl space-y-4">
+                {insightBuildResult && insightRunResult && (
+                  <div className="rounded-xl border border-border/60 bg-card/30 p-4">
+                    <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Visualization
+                    </p>
+                    <FocusChartRenderer
+                      spec={insightBuildResult.chartSpec}
+                      rows={insightRunResult.rows}
+                    />
+                  </div>
+                )}
+                <div className="rounded-xl border border-border/60 bg-card/30 p-5">
+                  <MessageResponse>{insightReport.reportMarkdown}</MessageResponse>
+                </div>
+              </div>
+            ) : (
+              <div className="mx-auto w-full max-w-5xl text-sm text-muted-foreground">
+                {isGeneratingInsight
+                  ? (insightProgressLabel || "Building report...")
+                  : "Select the sparkles action on a response to generate an insights report."}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
         open={isFocusModeOpen}
         onOpenChange={(open) => {
           setIsFocusModeOpen(open)
           if (!open) {
             setFocusRunResult(null)
             setFocusBuildResult(null)
+            setFocusReportResult(null)
             setFocusResultsTab("run")
             setFocusError(null)
             setIsRunningMock(false)
             setIsBuildingViz(false)
+            setIsGeneratingReport(false)
           }
         }}
       >
@@ -1264,6 +1595,25 @@ export default function ChatPage() {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs gap-1.5"
+                        onClick={generateReport}
+                        disabled={isGeneratingReport || !focusRunResult}
+                      >
+                        {isGeneratingReport ? (
+                          <>
+                            <Spinner className="h-3.5 w-3.5" />
+                            Reporting...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-3.5 w-3.5" />
+                            Report
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs gap-1.5"
                         onClick={copyFocusCode}
                       >
                         {focusCopied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
@@ -1272,7 +1622,19 @@ export default function ChatPage() {
                     </div>
                   </div>
 
-                  <div className="relative min-h-[34vh] border-t border-border/20">
+                  <div className="px-3 py-1.5 border-b border-border/40 bg-card/20">
+                    <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoBuildAfterRun}
+                        onChange={(e) => setAutoBuildAfterRun(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-border"
+                      />
+                      Auto-build after run
+                    </label>
+                  </div>
+
+                  <div className="relative flex-1 min-h-0 border-b border-border/30">
                     <div
                       ref={focusEditorHighlightRef}
                       className="absolute inset-0 overflow-auto px-4 py-3 pointer-events-none [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-0"
@@ -1309,16 +1671,19 @@ ${focusEditorCode || " "}
                   {(focusRunResult || focusBuildResult) && (
                     <Tabs
                       value={focusResultsTab}
-                      onValueChange={(value) => setFocusResultsTab(value as "run" | "build")}
+                      onValueChange={(value) => setFocusResultsTab(value as "run" | "build" | "report")}
                       className="border-t border-border/50"
                     >
                       <div className="px-3 py-2 border-b border-border/50 bg-card/40">
                         <TabsList className="h-8">
                           <TabsTrigger value="run" className="text-xs px-3">
-                            Run Results
+                            Run
                           </TabsTrigger>
                           <TabsTrigger value="build" className="text-xs px-3" disabled={!focusBuildResult}>
-                            Build Results
+                            Build
+                          </TabsTrigger>
+                          <TabsTrigger value="report" className="text-xs px-3" disabled={!focusReportResult}>
+                            Report
                           </TabsTrigger>
                         </TabsList>
                       </div>
@@ -1327,7 +1692,7 @@ ${focusEditorCode || " "}
                         {focusRunResult ? (
                           <>
                             <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/20">
-                              {focusRunResult.summary} · {focusRunResult.rows.length} mocked row{focusRunResult.rows.length === 1 ? "" : "s"}
+                              {focusRunResult.summary} · {focusRunResult.rows.length} row{focusRunResult.rows.length === 1 ? "" : "s"}
                             </div>
                             {focusRunResult.rows.length > 0 ? (
                               <table className="w-full text-xs">
@@ -1360,7 +1725,7 @@ ${focusEditorCode || " "}
                           </>
                         ) : (
                           <div className="p-4 text-xs text-muted-foreground">
-                            Run the mock agent to view table output.
+                            Run the data agent to view table output.
                           </div>
                         )}
                       </TabsContent>
@@ -1387,6 +1752,23 @@ ${focusEditorCode || " "}
                         ) : (
                           <div className="p-4 text-xs text-muted-foreground">
                             Build visualization after a successful run.
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      <TabsContent value="report" className="max-h-[34vh] overflow-auto">
+                        {focusReportResult ? (
+                          <div className="p-4 space-y-3">
+                            <div className="text-xs text-muted-foreground">
+                              {focusReportResult.title}
+                            </div>
+                            <div className="rounded-md border border-border/50 bg-card/20 p-3">
+                              <MessageResponse>{focusReportResult.reportMarkdown}</MessageResponse>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 text-xs text-muted-foreground">
+                            Generate a report after running results.
                           </div>
                         )}
                       </TabsContent>

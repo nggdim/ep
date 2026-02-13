@@ -55,6 +55,20 @@ export const FocusBuildRequestSchema = z.object({
   credentials: FocusCredentialsSchema,
 })
 
+export const FocusReportResultSchema = z.object({
+  title: z.string().min(1),
+  reportMarkdown: z.string().min(1),
+})
+
+export const FocusReportRequestSchema = z.object({
+  language: z.string().min(1),
+  code: z.string().min(1),
+  runResult: FocusRunResultSchema,
+  buildResult: FocusBuildResultSchema.optional(),
+  credentials: FocusCredentialsSchema,
+})
+
 export type FocusCredentials = z.infer<typeof FocusCredentialsSchema>
 export type FocusRunResult = z.infer<typeof FocusRunResultSchema>
 export type FocusBuildResult = z.infer<typeof FocusBuildResultSchema>
+export type FocusReportResult = z.infer<typeof FocusReportResultSchema>
