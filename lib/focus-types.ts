@@ -18,6 +18,7 @@ export const FocusRunResultSchema = z.object({
   rows: z.array(z.record(z.string(), z.unknown())).min(1),
   summary: z.string().min(1),
   warnings: z.array(z.string()).optional(),
+  rawResponse: z.string().optional(),
 })
 
 export const FocusRunRequestSchema = z.object({
@@ -46,6 +47,7 @@ export const FocusBuildResultSchema = z.object({
   chartCode: z.string().min(1),
   rationale: z.string().min(1),
   confidence: z.number().min(0).max(1).optional(),
+  rawResponse: z.string().optional(),
 })
 
 export const FocusBuildRequestSchema = z.object({
@@ -58,6 +60,7 @@ export const FocusBuildRequestSchema = z.object({
 export const FocusReportResultSchema = z.object({
   title: z.string().min(1),
   reportMarkdown: z.string().min(1),
+  rawResponse: z.string().optional(),
 })
 
 export const FocusReportRequestSchema = z.object({

@@ -26,6 +26,26 @@ Guidelines:
 - If you're unsure about something, say so honestly
 - Ask clarifying questions when the request is ambiguous`
 
+const CONTEXT_CHAR_BUDGET = 24_000
+
+function trimMessagesToBudget(messages: ModelMessage[], budgetChars: number) {
+  const selected: ModelMessage[] = []
+  let usedChars = 0
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const current = messages[i]
+    const estimatedChars = JSON.stringify(current).length
+    // Always keep at least the most recent message.
+    if (selected.length > 0 && usedChars + estimatedChars > budgetChars) {
+      break
+    }
+    usedChars += estimatedChars
+    selected.push(current)
+  }
+
+  return selected.reverse()
+}
+
 function resolveProviderBaseUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
   const normalized = baseUrl.trim().replace(/\/+$/, "")
 
@@ -41,6 +61,7 @@ function resolveProviderBaseUrl(baseUrl: string, urlMode?: "base" | "endpoint") 
 }
 
 export async function POST(req: Request) {
+  const requestStartedAt = Date.now()
   try {
     const body = await req.json()
     const { messages, baseUrl, apiKey, model, skipSslVerify, systemPrompt, urlMode } = body
@@ -61,9 +82,10 @@ export async function POST(req: Request) {
 
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
 
+    const trimmedMessages = trimMessagesToBudget(modelMessages, CONTEXT_CHAR_BUDGET)
     const messagesWithSystem: ModelMessage[] = [
       { role: "system", content: systemPrompt || SYSTEM_PROMPT },
-      ...modelMessages,
+      ...trimmedMessages,
     ]
 
     const providerBaseUrl = resolveProviderBaseUrl(baseUrl, urlMode)
@@ -106,13 +128,61 @@ export async function POST(req: Request) {
       fetch: customFetch,
     })
 
+    let firstTokenMs: number | null = null
+    let finishReason: string | undefined
+    let usage:
+      | {
+          inputTokens?: number
+          outputTokens?: number
+          totalTokens?: number
+        }
+      | undefined
+
     const result = streamText({
       model: provider(model),
       messages: messagesWithSystem,
       temperature: 0.7,
+      onFinish: (event) => {
+        finishReason = event.finishReason
+        usage = event.usage
+      },
     })
 
-    return result.toTextStreamResponse()
+    const response = result.toTextStreamResponse()
+    if (!response.body) {
+      return response
+    }
+
+    const instrumentedStream = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          if (firstTokenMs === null) {
+            firstTokenMs = Date.now() - requestStartedAt
+          }
+          controller.enqueue(chunk)
+        },
+        flush() {
+          const totalResponseMs = Date.now() - requestStartedAt
+          console.log(
+            "[Chatbot API] metrics",
+            JSON.stringify({
+              model,
+              totalResponseMs,
+              firstTokenMs,
+              inputTokens: usage?.inputTokens ?? null,
+              outputTokens: usage?.outputTokens ?? null,
+              totalTokens: usage?.totalTokens ?? null,
+              finishReason: finishReason ?? null,
+            })
+          )
+        },
+      })
+    )
+
+    return new Response(instrumentedStream, {
+      status: response.status,
+      headers: response.headers,
+    })
   } catch (error) {
     console.error("[Chatbot API] Error:", error instanceof Error ? error.message : String(error))
     return new Response(

@@ -110,6 +110,7 @@ Build result: ${buildResult ? JSON.stringify(buildResult.chartSpec) : "none"}
     const validated = FocusReportResultSchema.safeParse({
       title,
       reportMarkdown: reportMarkdown || "No report content generated.",
+      rawResponse: reportMarkdown || "",
     })
     if (!validated.success) {
       return new Response(

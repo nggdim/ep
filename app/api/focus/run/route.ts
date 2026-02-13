@@ -93,6 +93,7 @@ function fallbackRunResult(language: string) {
     ],
     summary: `Mocked output generated for ${language} code.`,
     warnings: ["Model output parsing failed; fallback mock dataset used."],
+    rawResponse: "",
   }
 }
 
@@ -140,7 +141,10 @@ ${code.slice(0, 8000)}
 
     const validated = FocusRunResultSchema.safeParse(candidate)
     if (!validated.success) {
-      const fallback = fallbackRunResult(language)
+      const fallback = {
+        ...fallbackRunResult(language),
+        rawResponse: modelText,
+      }
       return new Response(JSON.stringify(fallback), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -152,6 +156,7 @@ ${code.slice(0, 8000)}
       JSON.stringify({
         ...validated.data,
         rows,
+        rawResponse: modelText,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     )

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
 import { TextStreamChatTransport } from "ai"
 import { useRouter } from "next/navigation"
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels"
 
 // shadcn sidebar
 import {
@@ -333,6 +334,12 @@ type ExtractedCodeBlock = {
   indexInMessage: number
 }
 
+type ChatPerfMetrics = {
+  responseMs: number
+  firstTokenMs: number | null
+  estimatedTokens: number
+}
+
 type InsightQueueStatus = "pending" | "running" | "completed" | "error"
 type InsightQueueItem = {
   id: "run" | "build" | "report"
@@ -378,7 +385,22 @@ function fallbackCodeTitle(block: ExtractedCodeBlock) {
   return firstLine.slice(0, 72)
 }
 
-function ChatMessageMarkdown({ content }: { content: string }) {
+function getTextFromParts(parts: Array<{ type: string; text?: string }> | undefined) {
+  return parts
+    ?.filter((part) => part.type === "text")
+    .map((part) => part.text || "")
+    .join("") || ""
+}
+
+function estimateTokensFromText(text: string) {
+  if (!text.trim()) return 0
+  return Math.max(1, Math.round(text.length / 4))
+}
+
+function ChatMessageMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  if (isStreaming) {
+    return <div className="whitespace-pre-wrap break-words text-sm leading-6">{content}</div>
+  }
   const safeContent = useMemo(() => sanitizeStreamedMarkdown(content), [content])
   return <MessageResponse>{safeContent}</MessageResponse>
 }
@@ -459,19 +481,58 @@ export default function ChatPage() {
       onError: (err) => console.error("[ChatPage] Error:", err.message),
     })
 
+  const codeBlocksCacheRef = useRef<Map<string, { text: string; blocks: ExtractedCodeBlock[] }>>(new Map())
+  const pendingChatMetricsRef = useRef<{
+    startedAt: number
+    firstTokenMs: number | null
+    baselineAssistantCount: number
+  } | null>(null)
+  const [chatPerfByMessageId, setChatPerfByMessageId] = useState<Record<string, ChatPerfMetrics>>({})
+
+  const messageTextById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const message of messages) {
+      map.set(
+        message.id,
+        getTextFromParts(message.parts as Array<{ type: string; text?: string }> | undefined)
+      )
+    }
+    return map
+  }, [messages])
+
+  const previousUserTextByMessageId = useMemo(() => {
+    const map = new Map<string, string>()
+    let previousUserText = ""
+    for (const message of messages) {
+      map.set(message.id, previousUserText)
+      if (message.role === "user") {
+        previousUserText = messageTextById.get(message.id) || ""
+      }
+    }
+    return map
+  }, [messages, messageTextById])
+
+  const getCodeBlocksForMessage = useCallback((messageId: string, textContent: string) => {
+    if (!textContent) return []
+    const cached = codeBlocksCacheRef.current.get(messageId)
+    if (cached && cached.text === textContent) {
+      return cached.blocks
+    }
+    const blocks = extractCodeBlocks(sanitizeStreamedMarkdown(textContent), messageId)
+    codeBlocksCacheRef.current.set(messageId, { text: textContent, blocks })
+    return blocks
+  }, [])
+
   const assistantCodeBlocks = useMemo(() => {
     const blocks: ExtractedCodeBlock[] = []
     for (const message of messages) {
       if (message.role !== "assistant") continue
-      const text = message.parts
-        ?.filter((p) => p.type === "text")
-        .map((p) => (p as { type: "text"; text: string }).text)
-        .join("") || ""
+      const text = messageTextById.get(message.id) || ""
       if (!text) continue
-      blocks.push(...extractCodeBlocks(sanitizeStreamedMarkdown(text), message.id))
+      blocks.push(...getCodeBlocksForMessage(message.id, text))
     }
     return blocks
-  }, [messages])
+  }, [messages, messageTextById, getCodeBlocksForMessage])
 
   const [isFocusModeOpen, setIsFocusModeOpen] = useState(false)
   const [rawResponseVisibility, setRawResponseVisibility] = useState<Record<string, boolean>>({})
@@ -481,6 +542,11 @@ export default function ChatPage() {
   const [focusBuildResult, setFocusBuildResult] = useState<FocusBuildResult | null>(null)
   const [focusReportResult, setFocusReportResult] = useState<FocusReportResult | null>(null)
   const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build" | "report">("run")
+  const [focusRawTabVisibility, setFocusRawTabVisibility] = useState<Record<"run" | "build" | "report", boolean>>({
+    run: false,
+    build: false,
+    report: false,
+  })
   const [isRunningMock, setIsRunningMock] = useState(false)
   const [isBuildingViz, setIsBuildingViz] = useState(false)
   const [isGeneratingReport, setIsGeneratingReport] = useState(false)
@@ -523,6 +589,7 @@ export default function ChatPage() {
       setFocusBuildResult(null)
       setFocusReportResult(null)
       setFocusResultsTab("run")
+      setFocusRawTabVisibility({ run: false, build: false, report: false })
       setFocusError(null)
     }
   }, [assistantCodeBlocks, selectedCodeBlockId, isFocusModeOpen])
@@ -534,6 +601,7 @@ export default function ChatPage() {
     setFocusBuildResult(null)
     setFocusReportResult(null)
     setFocusResultsTab("run")
+    setFocusRawTabVisibility({ run: false, build: false, report: false })
     setFocusError(null)
   }, [selectedCodeBlock?.id])
 
@@ -548,6 +616,7 @@ export default function ChatPage() {
       setFocusBuildResult(null)
       setFocusReportResult(null)
       setFocusResultsTab("run")
+      setFocusRawTabVisibility({ run: false, build: false, report: false })
       setFocusError(null)
     }
     setIsFocusModeOpen(true)
@@ -693,6 +762,13 @@ export default function ChatPage() {
     setFocusCopied(true)
     setTimeout(() => setFocusCopied(false), 1200)
   }, [focusEditorCode])
+
+  const toggleFocusRawTab = useCallback((tab: "run" | "build" | "report") => {
+    setFocusRawTabVisibility((prev) => ({
+      ...prev,
+      [tab]: !prev[tab],
+    }))
+  }, [])
 
   const toggleRawResponse = useCallback((messageId: string) => {
     setRawResponseVisibility((prev) => ({
@@ -917,6 +993,42 @@ export default function ChatPage() {
     }
   }, [assistantCodeBlocks, codeSummaries, isFocusModeOpen])
 
+  useEffect(() => {
+    const pending = pendingChatMetricsRef.current
+    if (!pending) return
+
+    const assistantMessages = messages.filter((message) => message.role === "assistant")
+    const hasNewAssistantResponse = assistantMessages.length > pending.baselineAssistantCount
+    const lastAssistantMessage = hasNewAssistantResponse
+      ? assistantMessages[assistantMessages.length - 1]
+      : null
+    const lastAssistantText = lastAssistantMessage ? messageTextById.get(lastAssistantMessage.id) || "" : ""
+
+    if ((status === "submitted" || status === "streaming") && pending.firstTokenMs === null && lastAssistantText) {
+      pending.firstTokenMs = Date.now() - pending.startedAt
+      pendingChatMetricsRef.current = pending
+      return
+    }
+
+    if (status === "ready" || status === "error") {
+      const responseMs = Date.now() - pending.startedAt
+      const estimatedTokens = estimateTokensFromText(lastAssistantText)
+      const metrics: ChatPerfMetrics = {
+        responseMs,
+        firstTokenMs: pending.firstTokenMs,
+        estimatedTokens,
+      }
+      if (lastAssistantMessage) {
+        setChatPerfByMessageId((prev) => ({
+          ...prev,
+          [lastAssistantMessage.id]: metrics,
+        }))
+        console.info("[Chat UI] metrics", { messageId: lastAssistantMessage.id, ...metrics })
+      }
+      pendingChatMetricsRef.current = null
+    }
+  }, [messages, status, messageTextById])
+
   // ── Persist messages to Dexie when they change ──
   const prevMessagesLenRef = useRef(0)
   useEffect(() => {
@@ -968,6 +1080,20 @@ export default function ChatPage() {
     prevMessagesLenRef.current = 0
   }, [setMessages])
 
+  const startChatMetricsTracking = useCallback(() => {
+    const baselineAssistantCount = messages.filter((message) => message.role === "assistant").length
+    pendingChatMetricsRef.current = {
+      startedAt: Date.now(),
+      firstTokenMs: null,
+      baselineAssistantCount,
+    }
+  }, [messages])
+
+  const handleRegenerate = useCallback(() => {
+    startChatMetricsTracking()
+    regenerate()
+  }, [regenerate, startChatMetricsTracking])
+
   // ── Send ──
   const handleSubmit = useCallback(async (message: PromptInputMessage) => {
     if (!message.text?.trim() || !credentials) return
@@ -981,9 +1107,10 @@ export default function ChatPage() {
       prevMessagesLenRef.current = 0
     }
 
+    startChatMetricsTracking()
     sendMessage({ text: message.text })
     setInputText("")
-  }, [credentials, activeConversationId, create, sendMessage])
+  }, [credentials, activeConversationId, create, sendMessage, startChatMetricsTracking])
 
   // ── Rename ──
   const handleRenameSubmit = useCallback(async () => {
@@ -1225,25 +1352,14 @@ export default function ChatPage() {
                 )}>
                   {messages.length === 0 ? null : (
                     messages.map((message, idx) => {
-                      const textContent = message.parts
-                        ?.filter((p) => p.type === "text")
-                        .map((p) => (p as { type: "text"; text: string }).text)
-                        .join("") || ""
-                      const previousUserMessageText = (() => {
-                        for (let i = idx - 1; i >= 0; i--) {
-                          const candidate = messages[i]
-                          if (candidate.role !== "user") continue
-                          return (
-                            candidate.parts
-                              ?.filter((p) => p.type === "text")
-                              .map((p) => (p as { type: "text"; text: string }).text)
-                              .join("") || ""
-                          )
-                        }
-                        return ""
-                      })()
+                      const textContent = messageTextById.get(message.id) || ""
+                      const previousUserMessageText = previousUserTextByMessageId.get(message.id) || ""
+                      const isStreamingAssistantMessage =
+                        status === "streaming" &&
+                        message.role === "assistant" &&
+                        idx === messages.length - 1
                       const messageCodeBlocks = message.role === "assistant"
-                        ? extractCodeBlocks(sanitizeStreamedMarkdown(textContent), message.id)
+                        ? getCodeBlocksForMessage(message.id, textContent)
                         : []
 
                       return (
@@ -1252,7 +1368,7 @@ export default function ChatPage() {
                             <MessageContent className={message.role === "assistant" ? "w-full" : undefined}>
                               {textContent ? (
                                 <>
-                                  <ChatMessageMarkdown content={textContent} />
+                                  <ChatMessageMarkdown content={textContent} isStreaming={isStreamingAssistantMessage} />
                                   {rawResponseVisibility[message.id] && (
                                     <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-3">
                                       <p className="mb-2 text-[11px] font-medium text-muted-foreground">
@@ -1284,7 +1400,7 @@ export default function ChatPage() {
                                 </MessageAction>
                                 {idx === messages.length - 1 && (
                                   message.role === "assistant" ? (
-                                    <MessageAction tooltip="Regenerate" onClick={() => regenerate()}>
+                                    <MessageAction tooltip="Regenerate" onClick={handleRegenerate}>
                                       <RefreshCcw className="h-3 w-3" />
                                     </MessageAction>
                                   ) : null
@@ -1324,6 +1440,12 @@ export default function ChatPage() {
                                 )}
                               </MessageActions>
                             )}
+                            {message.role === "assistant" && chatPerfByMessageId[message.id] && (
+                              <p className="mt-1 text-[11px] text-muted-foreground/70">
+                                {chatPerfByMessageId[message.id].responseMs}ms
+                                · ~{chatPerfByMessageId[message.id].estimatedTokens} tokens
+                              </p>
+                            )}
                           </Message>
                         </div>
                       )
@@ -1346,7 +1468,7 @@ export default function ChatPage() {
                       <div className="flex-1 text-sm">
                         <p className="font-medium text-destructive mb-1">Something went wrong</p>
                         <p className="text-destructive/80 text-xs mb-3">{error.message}</p>
-                        <Button variant="outline" size="sm" onClick={() => regenerate()} className="h-7 text-xs gap-1.5">
+                        <Button variant="outline" size="sm" onClick={handleRegenerate} className="h-7 text-xs gap-1.5">
                           <RefreshCcw className="h-3 w-3" /> Try again
                         </Button>
                       </div>
@@ -1504,6 +1626,7 @@ export default function ChatPage() {
             setFocusBuildResult(null)
             setFocusReportResult(null)
             setFocusResultsTab("run")
+            setFocusRawTabVisibility({ run: false, build: false, report: false })
             setFocusError(null)
             setIsRunningMock(false)
             setIsBuildingViz(false)
@@ -1519,269 +1642,340 @@ export default function ChatPage() {
             </SheetDescription>
           </SheetHeader>
 
-          <div className="min-h-0 flex-1 grid grid-cols-[280px_1fr]">
-            <div className="border-r border-border/50 overflow-auto">
-              <div className="px-3 py-2 text-[11px] text-muted-foreground border-b border-border/50">
-                Code blocks ({assistantCodeBlocks.length})
-              </div>
-              <div className="p-2 space-y-1">
-                {assistantCodeBlocks.map((block) => (
-                  <button
-                    key={block.id}
-                    onClick={() => setSelectedCodeBlockId(block.id)}
-                    className={cn(
-                      "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
-                      selectedCodeBlockId === block.id
-                        ? "border-primary/40 bg-primary/10"
-                        : "border-border/40 hover:bg-accent/40"
-                    )}
-                  >
-                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <span className="uppercase tracking-wide">{block.language}</span>
-                      {summarizingIds[block.id] && <Spinner className="h-3 w-3" />}
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs font-medium text-foreground/90">
-                      {codeSummaries[block.id] || "Summarizing..."}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="min-h-0 flex flex-col">
-              {selectedCodeBlock ? (
-                <>
-                  <div className="border-b border-border/50 px-3 py-2 flex items-center justify-between gap-2">
-                    <div className="text-xs text-muted-foreground">
-                      Editing <span className="text-foreground">{selectedCodeBlock.language}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs gap-1.5"
-                        onClick={runMockData}
-                        disabled={isRunningMock || !focusEditorCode.trim()}
-                      >
-                        {isRunningMock ? (
-                          <>
-                            <Spinner className="h-3.5 w-3.5" />
-                            Running...
-                          </>
-                        ) : (
-                          <>
-                            <Play className="h-3.5 w-3.5" />
-                            Run
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs gap-1.5"
-                        onClick={buildVisualization}
-                        disabled={isBuildingViz || !focusRunResult}
-                      >
-                        {isBuildingViz ? (
-                          <>
-                            <Spinner className="h-3.5 w-3.5" />
-                            Building...
-                          </>
-                        ) : (
-                          "Build"
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs gap-1.5"
-                        onClick={generateReport}
-                        disabled={isGeneratingReport || !focusRunResult}
-                      >
-                        {isGeneratingReport ? (
-                          <>
-                            <Spinner className="h-3.5 w-3.5" />
-                            Reporting...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-3.5 w-3.5" />
-                            Report
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs gap-1.5"
-                        onClick={copyFocusCode}
-                      >
-                        {focusCopied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                        {focusCopied ? "Copied" : "Copy"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="px-3 py-1.5 border-b border-border/40 bg-card/20">
-                    <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={autoBuildAfterRun}
-                        onChange={(e) => setAutoBuildAfterRun(e.target.checked)}
-                        className="h-3.5 w-3.5 rounded border-border"
-                      />
-                      Auto-build after run
-                    </label>
-                  </div>
-
-                  <div className="relative flex-1 min-h-0 border-b border-border/30">
-                    <div
-                      ref={focusEditorHighlightRef}
-                      className="absolute inset-0 overflow-auto px-4 py-3 pointer-events-none [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-0"
+          <PanelGroup direction="horizontal" className="min-h-0 flex-1">
+            <Panel defaultSize={22} minSize={14} maxSize={42}>
+              <div className="h-full border-r border-[0.5px] border-border/40 overflow-auto">
+                <div className="px-3 py-2 text-[11px] text-muted-foreground border-b border-[0.5px] border-border/40">
+                  Code blocks ({assistantCodeBlocks.length})
+                </div>
+                <div className="p-2 space-y-1">
+                  {assistantCodeBlocks.map((block) => (
+                    <button
+                      key={block.id}
+                      onClick={() => setSelectedCodeBlockId(block.id)}
+                      className={cn(
+                        "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
+                        selectedCodeBlockId === block.id
+                          ? "border-primary/40 bg-primary/10"
+                          : "border-border/40 hover:bg-accent/40"
+                      )}
                     >
-                      <MessageResponse>{`\
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span className="uppercase tracking-wide">{block.language}</span>
+                        {summarizingIds[block.id] && <Spinner className="h-3 w-3" />}
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs font-medium text-foreground/90">
+                        {codeSummaries[block.id] || "Summarizing..."}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="w-px bg-border/35 hover:bg-border/60 transition-colors cursor-col-resize" />
+
+            <Panel minSize={36}>
+              <PanelGroup direction="vertical" className="min-h-0 h-full">
+                <Panel defaultSize={62} minSize={35}>
+                  {selectedCodeBlock ? (
+                    <div className="h-full min-h-0 flex flex-col">
+                      <div className="border-b border-[0.5px] border-border/40 px-3 py-2 flex items-center justify-between gap-2">
+                        <div className="text-xs text-muted-foreground">
+                          Editing <span className="text-foreground">{selectedCodeBlock.language}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={runMockData}
+                            disabled={isRunningMock || !focusEditorCode.trim()}
+                          >
+                            {isRunningMock ? (
+                              <>
+                                <Spinner className="h-3.5 w-3.5" />
+                                Running...
+                              </>
+                            ) : (
+                              <>
+                                <Play className="h-3.5 w-3.5" />
+                                Run
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={buildVisualization}
+                            disabled={isBuildingViz || !focusRunResult}
+                          >
+                            {isBuildingViz ? (
+                              <>
+                                <Spinner className="h-3.5 w-3.5" />
+                                Building...
+                              </>
+                            ) : (
+                              "Build"
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={generateReport}
+                            disabled={isGeneratingReport || !focusRunResult}
+                          >
+                            {isGeneratingReport ? (
+                              <>
+                                <Spinner className="h-3.5 w-3.5" />
+                                Reporting...
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="h-3.5 w-3.5" />
+                                Report
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={copyFocusCode}
+                          >
+                            {focusCopied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                            {focusCopied ? "Copied" : "Copy"}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="px-3 py-1.5 border-b border-[0.5px] border-border/35 bg-card/20">
+                        <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={autoBuildAfterRun}
+                            onChange={(e) => setAutoBuildAfterRun(e.target.checked)}
+                            className="h-3.5 w-3.5 rounded border-border"
+                          />
+                          Auto-build after run
+                        </label>
+                      </div>
+
+                      <div className="relative flex-1 min-h-0">
+                        <div
+                          ref={focusEditorHighlightRef}
+                          className="absolute inset-0 overflow-auto px-4 py-3 pointer-events-none [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-0"
+                        >
+                          <MessageResponse>{`\
 \`\`\`${selectedCodeBlock.language}
 ${focusEditorCode || " "}
 \`\`\`
 `}</MessageResponse>
+                        </div>
+                        <textarea
+                          ref={focusEditorTextareaRef}
+                          value={focusEditorCode}
+                          onChange={(e) => setFocusEditorCode(e.target.value)}
+                          onScroll={syncFocusEditorScroll}
+                          onKeyDown={(e) => {
+                            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                              e.preventDefault()
+                              runMockData()
+                            }
+                          }}
+                          className="absolute inset-0 resize-none border-0 bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-foreground outline-none selection:bg-accent/30"
+                          spellCheck={false}
+                          wrap="off"
+                        />
+                      </div>
                     </div>
-                    <textarea
-                      ref={focusEditorTextareaRef}
-                      value={focusEditorCode}
-                      onChange={(e) => setFocusEditorCode(e.target.value)}
-                      onScroll={syncFocusEditorScroll}
-                      onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                          e.preventDefault()
-                          runMockData()
-                        }
-                      }}
-                      className="absolute inset-0 resize-none border-0 bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-foreground outline-none selection:bg-accent/30"
-                      spellCheck={false}
-                      wrap="off"
-                    />
-                  </div>
-
-                  {focusError && (
-                    <div className="border-t border-border/50 p-3 text-xs text-destructive">
-                      {focusError}
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                      No code block selected.
                     </div>
                   )}
+                </Panel>
 
-                  {(focusRunResult || focusBuildResult) && (
-                    <Tabs
-                      value={focusResultsTab}
-                      onValueChange={(value) => setFocusResultsTab(value as "run" | "build" | "report")}
-                      className="border-t border-border/50"
-                    >
-                      <div className="px-3 py-2 border-b border-border/50 bg-card/40">
-                        <TabsList className="h-8">
-                          <TabsTrigger value="run" className="text-xs px-3">
-                            Run
-                          </TabsTrigger>
-                          <TabsTrigger value="build" className="text-xs px-3" disabled={!focusBuildResult}>
-                            Build
-                          </TabsTrigger>
-                          <TabsTrigger value="report" className="text-xs px-3" disabled={!focusReportResult}>
-                            Report
-                          </TabsTrigger>
-                        </TabsList>
+                <PanelResizeHandle className="h-px bg-border/35 hover:bg-border/60 transition-colors cursor-row-resize" />
+
+                <Panel defaultSize={38} minSize={18}>
+                  <div className="h-full min-h-0 border-t border-[0.5px] border-border/40">
+                    {focusError && (
+                      <div className="border-b border-[0.5px] border-border/40 p-3 text-xs text-destructive">
+                        {focusError}
                       </div>
+                    )}
 
-                      <TabsContent value="run" className="max-h-[34vh] overflow-auto">
-                        {focusRunResult ? (
-                          <>
-                            <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/20">
-                              {focusRunResult.summary} · {focusRunResult.rows.length} row{focusRunResult.rows.length === 1 ? "" : "s"}
-                            </div>
-                            {focusRunResult.rows.length > 0 ? (
-                              <table className="w-full text-xs">
-                                <thead className="sticky top-0 bg-card/80 backdrop-blur">
-                                  <tr className="border-b border-border/50">
-                                    {focusRunResult.columns.map((col) => (
-                                      <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">
-                                        {col.name}
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {focusRunResult.rows.map((row, rowIdx) => (
-                                    <tr key={rowIdx} className="border-b border-border/30">
+                    {(focusRunResult || focusBuildResult || focusReportResult) ? (
+                      <Tabs
+                        value={focusResultsTab}
+                        onValueChange={(value) => setFocusResultsTab(value as "run" | "build" | "report")}
+                        className="h-full min-h-0 flex flex-col"
+                      >
+                        <div className="px-3 py-2 border-b border-[0.5px] border-border/40 bg-card/40 shrink-0">
+                          <TabsList className="h-8">
+                            <TabsTrigger value="run" className="text-xs px-3">
+                              Run
+                            </TabsTrigger>
+                            <TabsTrigger value="build" className="text-xs px-3" disabled={!focusBuildResult}>
+                              Build
+                            </TabsTrigger>
+                            <TabsTrigger value="report" className="text-xs px-3" disabled={!focusReportResult}>
+                              Report
+                            </TabsTrigger>
+                          </TabsList>
+                        </div>
+
+                        <TabsContent value="run" className="m-0 flex-1 min-h-0 overflow-auto">
+                          {focusRunResult ? (
+                            <>
+                              <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50 bg-card/20 flex items-center justify-between gap-2">
+                                <span>
+                                  {focusRunResult.summary} · {focusRunResult.rows.length} row{focusRunResult.rows.length === 1 ? "" : "s"}
+                                </span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[11px] px-2 gap-1"
+                                  onClick={() => toggleFocusRawTab("run")}
+                                >
+                                  {focusRawTabVisibility.run ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                  {focusRawTabVisibility.run ? "Hide raw" : "View raw response"}
+                                </Button>
+                              </div>
+                              {focusRawTabVisibility.run && (
+                                <div className="mx-4 mt-3 rounded-md border border-border/60 bg-muted/30 p-3">
+                                  <p className="mb-2 text-[11px] font-medium text-muted-foreground">Raw response</p>
+                                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
+                                    {focusRunResult.rawResponse || "No raw response available."}
+                                  </pre>
+                                </div>
+                              )}
+                              {focusRunResult.rows.length > 0 ? (
+                                <table className="w-full text-xs">
+                                  <thead className="sticky top-0 bg-card/80 backdrop-blur">
+                                    <tr className="border-b border-border/50">
                                       {focusRunResult.columns.map((col) => (
-                                        <td key={`${rowIdx}-${col.name}`} className="px-3 py-2 font-mono whitespace-nowrap">
-                                          {String(row[col.name] ?? "NULL")}
-                                        </td>
+                                        <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">
+                                          {col.name}
+                                        </th>
                                       ))}
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            ) : (
-                              <div className="p-4 text-xs text-muted-foreground">
-                                Query executed successfully. No rows returned.
+                                  </thead>
+                                  <tbody>
+                                    {focusRunResult.rows.map((row, rowIdx) => (
+                                      <tr key={rowIdx} className="border-b border-border/30">
+                                        {focusRunResult.columns.map((col) => (
+                                          <td key={`${rowIdx}-${col.name}`} className="px-3 py-2 font-mono whitespace-nowrap">
+                                            {String(row[col.name] ?? "NULL")}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div className="p-4 text-xs text-muted-foreground">
+                                  Query executed successfully. No rows returned.
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="p-4 text-xs text-muted-foreground">
+                              Run the data agent to view table output.
+                            </div>
+                          )}
+                        </TabsContent>
+
+                        <TabsContent value="build" className="m-0 flex-1 min-h-0 overflow-auto">
+                          {focusBuildResult && focusRunResult ? (
+                            <div className="p-4 space-y-3">
+                              <div className="text-xs text-muted-foreground flex items-center justify-between gap-2">
+                                <span>{focusBuildResult.chartSpec.title} · {focusBuildResult.rationale}</span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[11px] px-2 gap-1"
+                                  onClick={() => toggleFocusRawTab("build")}
+                                >
+                                  {focusRawTabVisibility.build ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                  {focusRawTabVisibility.build ? "Hide raw" : "View raw response"}
+                                </Button>
                               </div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="p-4 text-xs text-muted-foreground">
-                            Run the data agent to view table output.
-                          </div>
-                        )}
-                      </TabsContent>
+                              {focusRawTabVisibility.build && (
+                                <div className="rounded-md border border-border/60 bg-muted/30 p-3">
+                                  <p className="mb-2 text-[11px] font-medium text-muted-foreground">Raw response</p>
+                                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
+                                    {focusBuildResult.rawResponse || "No raw response available."}
+                                  </pre>
+                                </div>
+                              )}
+                              <FocusChartRenderer
+                                spec={focusBuildResult.chartSpec}
+                                rows={focusRunResult.rows}
+                              />
+                              <div className="rounded-md border border-border/50 bg-card/30 p-3">
+                                <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                  Recharts code
+                                </p>
+                                <pre className="overflow-auto text-xs leading-5 font-mono whitespace-pre">
+                                  <code>{focusBuildResult.chartCode}</code>
+                                </pre>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="p-4 text-xs text-muted-foreground">
+                              Build visualization after a successful run.
+                            </div>
+                          )}
+                        </TabsContent>
 
-                      <TabsContent value="build" className="max-h-[34vh] overflow-auto">
-                        {focusBuildResult && focusRunResult ? (
-                          <div className="p-4 space-y-3">
-                            <div className="text-xs text-muted-foreground">
-                              {focusBuildResult.chartSpec.title} · {focusBuildResult.rationale}
+                        <TabsContent value="report" className="m-0 flex-1 min-h-0 overflow-auto">
+                          {focusReportResult ? (
+                            <div className="p-4 space-y-3">
+                              <div className="text-xs text-muted-foreground flex items-center justify-between gap-2">
+                                <span>{focusReportResult.title}</span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[11px] px-2 gap-1"
+                                  onClick={() => toggleFocusRawTab("report")}
+                                >
+                                  {focusRawTabVisibility.report ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                  {focusRawTabVisibility.report ? "Hide raw" : "View raw response"}
+                                </Button>
+                              </div>
+                              {focusRawTabVisibility.report && (
+                                <div className="rounded-md border border-border/60 bg-muted/30 p-3">
+                                  <p className="mb-2 text-[11px] font-medium text-muted-foreground">Raw response</p>
+                                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
+                                    {focusReportResult.rawResponse || "No raw response available."}
+                                  </pre>
+                                </div>
+                              )}
+                              <div className="rounded-md border border-border/50 bg-card/20 p-3">
+                                <MessageResponse>{focusReportResult.reportMarkdown}</MessageResponse>
+                              </div>
                             </div>
-                            <FocusChartRenderer
-                              spec={focusBuildResult.chartSpec}
-                              rows={focusRunResult.rows}
-                            />
-                            <div className="rounded-md border border-border/50 bg-card/30 p-3">
-                              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                                Recharts code
-                              </p>
-                              <pre className="overflow-auto text-xs leading-5 font-mono whitespace-pre">
-                                <code>{focusBuildResult.chartCode}</code>
-                              </pre>
+                          ) : (
+                            <div className="p-4 text-xs text-muted-foreground">
+                              Generate a report after running results.
                             </div>
-                          </div>
-                        ) : (
-                          <div className="p-4 text-xs text-muted-foreground">
-                            Build visualization after a successful run.
-                          </div>
-                        )}
-                      </TabsContent>
-
-                      <TabsContent value="report" className="max-h-[34vh] overflow-auto">
-                        {focusReportResult ? (
-                          <div className="p-4 space-y-3">
-                            <div className="text-xs text-muted-foreground">
-                              {focusReportResult.title}
-                            </div>
-                            <div className="rounded-md border border-border/50 bg-card/20 p-3">
-                              <MessageResponse>{focusReportResult.reportMarkdown}</MessageResponse>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="p-4 text-xs text-muted-foreground">
-                            Generate a report after running results.
-                          </div>
-                        )}
-                      </TabsContent>
-                    </Tabs>
-                  )}
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                  No code block selected.
-                </div>
-              )}
-            </div>
-          </div>
+                          )}
+                        </TabsContent>
+                      </Tabs>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                        Run or build to see results.
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </PanelGroup>
+            </Panel>
+          </PanelGroup>
         </SheetContent>
       </Sheet>
     </div>

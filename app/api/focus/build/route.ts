@@ -213,6 +213,7 @@ SampleRows: ${JSON.stringify(sample)}
       chartCode,
       rationale: parsedModel.rationale || "Selected by fallback heuristics.",
       confidence: typeof parsedModel.confidence === "number" ? parsedModel.confidence : 0.6,
+      rawResponse: modelText,
     }
 
     const validated = FocusBuildResultSchema.safeParse(result)
