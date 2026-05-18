@@ -1,93 +1,204 @@
-# tois
+# Endpoint Connection Tester
 
+A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes.
 
+## Features
 
-## Getting started
+- **API Testing**: Test any HTTP endpoint with full control over method, headers, and body
+- **OpenAI API Testing**: Test OpenAI-compatible APIs (OpenAI, Azure, local LLMs, MaaS endpoints)
+- **Dual Mode**: Switch between client-side (browser) and server-side (proxied) requests
+- **SSL Control**: Skip SSL certificate verification for internal/self-signed certs (server mode only)
+- **Quick Presets**: Pre-configured test endpoints for rapid testing
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+---
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Test Cases
 
-## Add your files
+### 1. API Testing
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+#### Client-Side Mode
 
+The request is made directly from the browser using the native `fetch` API.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **GET Request** | Fetch data from any URL | Status code, response body |
+| **POST/PUT/PATCH/DELETE Request** | Send data with custom body | Status code, response body |
+| **HEAD/OPTIONS Request** | Metadata-only requests | Status code, headers only |
+| **Custom Headers** | Add arbitrary key-value headers | Headers sent correctly |
+| **Request Timeout** | Configurable timeout (1000-60000ms) | AbortError on timeout |
+| **JSON Response Parsing** | Auto-parse `application/json` | Parsed JSON in details |
+| **Non-JSON Response** | Text responses truncated to 5000 chars | Raw text in details |
+| **Network Errors** | DNS, connection failures | Error message captured |
+| **CORS Errors** | Cross-origin restrictions | Browser CORS error surfaced |
+
+**Limitations:**
+- ❌ Cannot skip SSL certificate verification (browser enforces SSL)
+- ❌ Subject to browser CORS policies
+
+---
+
+#### Server-Side Mode
+
+The request is proxied through a Next.js API route (`/api/proxy`) using `undici` for advanced HTTP control.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **All HTTP Methods** | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS | Status code, response body |
+| **Custom Headers** | Pass arbitrary headers to target | Headers forwarded correctly |
+| **Request Body** | JSON or text body for non-GET methods | Body sent correctly |
+| **Skip SSL Verification** | For self-signed certificates | `undici` Agent with `rejectUnauthorized: false` |
+| **Request Timeout** | Configurable timeout (default 10000ms) | 408 Timeout response |
+| **JSON Response Parsing** | Auto-parse `application/json` | Parsed JSON in response |
+| **Large Response Handling** | Responses truncated to 10000 chars | Truncated text |
+| **URL Validation** | Invalid URL format detection | 400 Bad Request |
+| **Network Errors** | Connection failures, DNS errors | 500 Internal Server Error |
+
+**Advantages:**
+- ✅ No CORS restrictions
+- ✅ Can skip SSL verification for internal/self-signed certs
+
+---
+
+### 2. OpenAI API Testing
+
+#### Client-Side Mode
+
+The request is made directly from the browser to the OpenAI-compatible API endpoint.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **Chat Completion Request** | Send messages to `/v1/chat/completions` | Response text, usage stats |
+| **Model Selection** | Test any model (GPT-4, Llama, Claude, etc.) | Model-specific response |
+| **System Prompt** | Customize assistant behavior | Affects response content |
+| **User Prompt** | Test message input | AI-generated response |
+| **Temperature** | Control randomness (0-2) | Affects response variability |
+| **Max Tokens** | Limit response length (1-4096) | Truncated at limit |
+| **API Key Validation** | Required field check | Error if missing |
+| **Base URL Validation** | Valid URL format required | Error if invalid |
+| **HTTP Error Responses** | 400, 401, 403, 404, 500, etc. | Error message extracted |
+| **Non-JSON Response** | Gateway/proxy error pages | Error with preview |
+| **Network Errors** | Connection failures, timeouts | Error name + message |
+
+**Limitations:**
+- ❌ Cannot skip SSL certificate verification
+- ❌ Subject to browser CORS (may fail for some providers)
+
+---
+
+#### Server-Side Mode
+
+The request is proxied through a Next.js API route (`/api/openai`) with SSL control.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **Chat Completion Request** | Server-proxied request to API | Response text, usage stats |
+| **Model Selection** | Any OpenAI-compatible model | Model name in response |
+| **System + User Prompts** | Custom message array | AI response |
+| **Temperature & Max Tokens** | Inference parameters | Affects response |
+| **Skip SSL Verification** | For MaaS/internal endpoints | `undici` bypasses SSL check |
+| **API Key Forwarding** | Bearer token authorization | Secure header forwarding |
+| **Base URL Flexibility** | OpenAI, Azure, local LLMs, MaaS | URL + `/v1/chat/completions` |
+| **Input Validation** | Missing baseUrl, apiKey, model | 400 Bad Request |
+| **Non-JSON Response Handling** | Error pages from gateways | Error with preview text |
+| **API Error Handling** | Provider-specific errors | Error message extracted |
+
+**Advantages:**
+- ✅ No CORS restrictions
+- ✅ Can skip SSL verification for internal/dev endpoints
+- ✅ Secure: API keys never exposed to browser network tab
+
+---
+
+## Quick Test Presets (API Testing)
+
+Pre-configured endpoints for rapid testing:
+
+| Preset | URL | Method | Purpose |
+|--------|-----|--------|---------|
+| JSONPlaceholder - Posts | `https://jsonplaceholder.typicode.com/posts/1` | GET | Fetch single post |
+| JSONPlaceholder - Users | `https://jsonplaceholder.typicode.com/users` | GET | List users |
+| JSONPlaceholder - Create Post | `https://jsonplaceholder.typicode.com/posts` | POST | Create resource |
+| HTTPBin - GET | `https://httpbin.org/get` | GET | Echo request data |
+| HTTPBin - POST | `https://httpbin.org/post` | POST | Echo POST data |
+| HTTPBin - Status 200 | `https://httpbin.org/status/200` | GET | Test success |
+| HTTPBin - Status 404 | `https://httpbin.org/status/404` | GET | Test not found |
+| HTTPBin - Status 500 | `https://httpbin.org/status/500` | GET | Test server error |
+| HTTPBin - Delay 2s | `https://httpbin.org/delay/2` | GET | Test timeout handling |
+| ReqRes - Users | `https://reqres.in/api/users?page=1` | GET | Paginated list |
+| ReqRes - Create User | `https://reqres.in/api/users` | POST | Create user |
+| Dog CEO - Random Dog | `https://dog.ceo/api/breeds/image/random` | GET | Image URL response |
+| Cat Facts - Random | `https://catfact.ninja/fact` | GET | Text response |
+
+---
+
+## Feature Comparison Matrix
+
+| Feature | API Client | API Server | OpenAI Client | OpenAI Server |
+|---------|:----------:|:----------:|:-------------:|:-------------:|
+| Direct browser request | ✅ | ❌ | ✅ | ❌ |
+| Server-proxied request | ❌ | ✅ | ❌ | ✅ |
+| CORS-free | ❌ | ✅ | ❌ | ✅ |
+| Skip SSL verification | ❌ | ✅ | ❌ | ✅ |
+| Custom headers | ✅ | ✅ | N/A | N/A |
+| Request body | ✅ | ✅ | ✅ | ✅ |
+| Configurable timeout | ✅ | ✅ | ❌ | ❌ |
+| Preset endpoints | ✅ | ✅ | ❌ | ❌ |
+| API key protection | ❌ | ✅ | ❌ | ✅ |
+
+---
+
+## When to Use Each Mode
+
+### Use Client Mode when:
+- Testing public CORS-enabled APIs
+- Debugging browser-specific behavior
+- Quick connectivity checks
+- No sensitive credentials involved
+
+### Use Server Mode when:
+- Testing internal/private endpoints
+- Working with self-signed SSL certificates
+- Need to bypass CORS restrictions
+- API keys should not be visible in browser dev tools
+- Testing MaaS endpoints behind corporate firewalls
+
+---
+
+## Getting Started
+
+```bash
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+
+# Build for production
+npm run build
+
+# Start production server
+npm start
 ```
-cd existing_repo
-git remote add origin https://gitlab.intra.hkma.gov.hk/do/genai-app/tois/tois.git
-git branch -M main
-git push -uf origin main
+
+## Docker
+
+```bash
+# Build image
+docker build -t endpoint-tester .
+
+# Run container
+docker run -p 3000:3000 endpoint-tester
 ```
 
-## Integrate with your tools
+## Kubernetes
 
-- [ ] [Set up project integrations](https://gitlab.intra.hkma.gov.hk/do/genai-app/tois/tois/-/settings/integrations)
+```bash
+# Deploy all resources
+kubectl apply -f k8s/all-in-one.yaml
 
-## Collaborate with your team
-
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+# Or deploy individually
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/ingress.yaml
+```
