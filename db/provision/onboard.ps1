@@ -41,7 +41,10 @@
     newest postgresql-*.exe found in <ProjectDir>\setup is used.
 
 .PARAMETER PgVersion
-    PostgreSQL major version. Default: 17.
+    PostgreSQL major version. When omitted it is auto-detected: the highest
+    version already installed under C:\Program Files\PostgreSQL (or with a
+    postgresql-x64-* service) wins, otherwise the version is read from the
+    staged installer filename. Falls back to 17.
 
 .PARAMETER DataDir
     PostgreSQL data directory. Default: <ProjectDir>\pgdata.
@@ -121,12 +124,17 @@ $ErrorActionPreference = "Stop"
 # Derived defaults and shared state
 # ---------------------------------------------------------------------------
 
-# String concat instead of Join-Path for drive-qualified paths: Join-Path
+# Native separator instead of Join-Path for drive-qualified paths: Join-Path
 # validates the drive, which breaks when this script is exercised (parse
-# checks, dry runs) on non-Windows hosts. Same convention as lib/common.ps1.
-$script:SetupDir = "$ProjectDir\setup"
-if (-not $DataDir) { $DataDir = "$ProjectDir\pgdata" }
-if (-not $BackupDir) { $BackupDir = "$ProjectDir\pgbackups" }
+# checks, dry runs) on non-Windows hosts. Same intent as lib/common.ps1.
+function Join-PathString {
+    param([string]$Base, [string]$Child)
+    return "$Base$([IO.Path]::DirectorySeparatorChar)$Child"
+}
+
+$script:SetupDir = Join-PathString $ProjectDir "setup"
+if (-not $DataDir) { $DataDir = Join-PathString $ProjectDir "pgdata" }
+if (-not $BackupDir) { $BackupDir = Join-PathString $ProjectDir "pgbackups" }
 
 $script:ProvisionScript = Join-Path $PSScriptRoot "provision-postgres.ps1"
 $script:StepsDir = Join-Path $PSScriptRoot "steps"
@@ -249,20 +257,56 @@ function Get-FreeSpaceGB {
     catch { return $null }
 }
 
-# Finds the PostgreSQL installer: explicit path first, then the newest
-# postgresql-*.exe in the default setup directory.
+# Base directory of the EDB installs; each major version ("flavour") gets
+# its own subdirectory, e.g. C:\Program Files\PostgreSQL\17, ...\18.
+$script:PgBaseDir = "C:\Program Files\PostgreSQL"
+
+# All PostgreSQL major versions present on this machine, detected from both
+# the install directories and the postgresql-x64-<version> services.
+function Get-InstalledPgVersions {
+    $versions = @()
+    if (Test-Path $script:PgBaseDir) {
+        $versions += @(Get-ChildItem -Path $script:PgBaseDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+$' } | ForEach-Object { $_.Name })
+    }
+    if (Get-Command Get-Service -ErrorAction SilentlyContinue) {
+        foreach ($service in @(Get-Service -Name "postgresql-x64-*" -ErrorAction SilentlyContinue)) {
+            if ($service.Name -match '^postgresql-x64-(\d+)$') { $versions += $Matches[1] }
+        }
+    }
+    return @($versions | Sort-Object { [int]$_ } -Unique)
+}
+
+# Major version encoded in an EDB installer filename,
+# e.g. postgresql-18.1-1-windows-x64.exe -> 18.
+function Get-InstallerMajorVersion {
+    param([string]$Path)
+    if ($Path -and ((Split-Path -Leaf $Path) -match '^postgresql-(\d+)[.-]')) { return $Matches[1] }
+    return $null
+}
+
+# All staged installers, newest first.
+function Find-StagedInstallers {
+    $hits = @()
+    foreach ($dir in @($script:SetupDir, $ProjectDir)) {
+        if (-not (Test-Path $dir)) { continue }
+        $hits += @(Get-ChildItem -Path $dir -Filter "postgresql-*.exe" -File -ErrorAction SilentlyContinue)
+    }
+    return @($hits | Sort-Object LastWriteTime -Descending)
+}
+
+# Finds the PostgreSQL installer: explicit path first; otherwise a staged
+# installer matching the target version is preferred, then the newest one.
 function Find-Installer {
     if ($InstallerPath) {
         if (Test-Path $InstallerPath) { return (Resolve-Path $InstallerPath).Path }
         return $null
     }
-    foreach ($dir in @($script:SetupDir, $ProjectDir)) {
-        if (-not (Test-Path $dir)) { continue }
-        $hit = Get-ChildItem -Path $dir -Filter "postgresql-*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($hit) { return $hit.FullName }
-    }
-    return $null
+    $staged = @(Find-StagedInstallers)
+    if ($staged.Count -eq 0) { return $null }
+    $matching = @($staged | Where-Object { (Get-InstallerMajorVersion $_.FullName) -eq $PgVersion })
+    if ($matching.Count -gt 0) { return $matching[0].FullName }
+    return $staged[0].FullName
 }
 
 function Get-ServiceState {
@@ -321,6 +365,23 @@ function Get-StatusChecks {
         $checks += [pscustomobject]@{ Label = "Free disk space"; State = "OK"; Detail = "$freeGb GB free"; Hint = "" }
     }
 
+    # Installed flavours --------------------------------------------------------
+    $installedVersions = @(Get-InstalledPgVersions)
+    if ($installedVersions.Count -gt 0) {
+        $detail = ($installedVersions | ForEach-Object { "$script:PgBaseDir\$_" }) -join ", "
+        $hint = ""
+        if ($installedVersions -notcontains $PgVersion) {
+            $hint = "Target version $PgVersion is not among them - pass -PgVersion $($installedVersions[-1]) to manage the existing install, or stage a $PgVersion installer."
+        }
+        elseif ($installedVersions.Count -gt 1) {
+            $hint = "Multiple flavours found - targeting $PgVersion (pass -PgVersion to switch)."
+        }
+        $checks += [pscustomobject]@{ Label = "Installed flavours"; State = "OK"; Detail = $detail; Hint = $hint }
+    }
+    else {
+        $checks += [pscustomobject]@{ Label = "Installed flavours"; State = "INFO"; Detail = "none found under $script:PgBaseDir"; Hint = "" }
+    }
+
     # PostgreSQL service / installer ------------------------------------------
     $serviceState = Get-ServiceState -Name $ctx.ServiceName
     $installer = Find-Installer
@@ -335,7 +396,16 @@ function Get-StatusChecks {
             Hint  = "Run option [3] Provision database once the installer is staged."
         }
         if ($installer) {
-            $checks += [pscustomobject]@{ Label = "PostgreSQL installer"; State = "OK"; Detail = $installer; Hint = "" }
+            $installerVersion = Get-InstallerMajorVersion $installer
+            if ($installerVersion -and $installerVersion -ne $PgVersion) {
+                $checks += [pscustomobject]@{
+                    Label = "PostgreSQL installer"; State = "WARN"; Detail = "$installer (PostgreSQL $installerVersion, target is $PgVersion)"
+                    Hint  = "Version mismatch: pass -PgVersion $installerVersion to install this flavour, or stage a PostgreSQL $PgVersion installer."
+                }
+            }
+            else {
+                $checks += [pscustomobject]@{ Label = "PostgreSQL installer"; State = "OK"; Detail = $installer; Hint = "" }
+            }
         }
         else {
             $checks += [pscustomobject]@{
@@ -564,6 +634,25 @@ function Invoke-Provision {
         if (-not $localCidr -and (Read-YesNo -Label "Open network access now (phase 2 - usually done later)?" -Default:$false)) {
             $localCidr = Read-WithDefault -Label "Allowed CIDR (e.g. 10.20.30.0/24)"
         }
+        # If the chosen version and the staged installer disagree, say so
+        # before asking for passwords rather than failing mid-install.
+        if (-not $doSkipInstall -and $installer) {
+            $installerVersion = Get-InstallerMajorVersion $installer
+            if ($installerVersion -and $installerVersion -ne $pgVersionLocal) {
+                Write-C ""
+                Write-C "  The staged installer is PostgreSQL $installerVersion but the target version is $pgVersionLocal." Yellow
+                Write-C "  Service name and install directory are derived from the target version, so a" Yellow
+                Write-C "  mismatch will provision against the wrong paths." Yellow
+                if (Read-YesNo -Label "Switch the target version to $installerVersion (recommended)?") {
+                    $pgVersionLocal = $installerVersion
+                }
+                elseif (-not (Read-YesNo -Label "Continue with version $pgVersionLocal anyway?" -Default:$false)) {
+                    Write-C "  Aborted - nothing was changed." Yellow
+                    return 0
+                }
+            }
+        }
+
         Write-C ""
         if (-not $superPw) { $superPw = Read-Password -Label "Password for the 'postgres' superuser" }
         if (-not $appPw) { $appPw = Read-Password -Label "Password for the '$appRoleLocal' application role" }
@@ -595,6 +684,15 @@ function Invoke-Provision {
         if (-not $superPw -or -not $appPw) {
             Write-C "  -Action provision requires -SuperPassword and -AppPassword when run non-interactively." Red
             return 1
+        }
+        # Non-interactive runs cannot confirm a flavour mismatch - fail fast.
+        if (-not $doSkipInstall -and $installer) {
+            $installerVersion = Get-InstallerMajorVersion $installer
+            if ($installerVersion -and $installerVersion -ne $pgVersionLocal) {
+                Write-C "  The staged installer is PostgreSQL $installerVersion but the target version is $pgVersionLocal." Red
+                Write-C "  Pass -PgVersion $installerVersion, or -InstallerPath pointing at a PostgreSQL $pgVersionLocal installer." Yellow
+                return 1
+            }
         }
     }
 
@@ -761,6 +859,23 @@ function Start-Menu {
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+# Respect an explicit -PgVersion; otherwise adopt the flavour that is
+# actually present: the highest installed version wins, then the version
+# encoded in a staged installer filename, then the parameter default.
+if (-not $PSBoundParameters.ContainsKey("PgVersion")) {
+    $detectedVersions = @(Get-InstalledPgVersions)
+    if ($detectedVersions.Count -gt 0) {
+        $PgVersion = $detectedVersions[-1]
+    }
+    else {
+        $staged = @(Find-StagedInstallers)
+        if ($staged.Count -gt 0) {
+            $stagedVersion = Get-InstallerMajorVersion $staged[0].FullName
+            if ($stagedVersion) { $PgVersion = $stagedVersion }
+        }
+    }
+}
 
 switch ($Action) {
     "menu" { Start-Menu; exit 0 }

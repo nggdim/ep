@@ -81,6 +81,14 @@ the installer is auto-detected in `C:\ep\setup`, data goes to `C:\ep\pgdata`,
 backups to `C:\ep\pgbackups`. Pass `-InstallerPath`, `-DataDir`, `-BackupDir`
 etc. to override. The sections below describe the same flow done by hand.
 
+The PostgreSQL version ("flavour") is auto-detected too: if a version is
+already installed (e.g. PostgreSQL 18 at `C:\Program Files\PostgreSQL\18`),
+the onboarding targets it; otherwise the version is read from the staged
+installer's filename (e.g. `postgresql-18.1-1-windows-x64.exe` → 18). Pass
+`-PgVersion` to pin a specific version — when several flavours are installed
+or the staged installer does not match the target, the status dashboard says
+so and the provisioning flow asks before continuing.
+
 ---
 
 ## Part A — Prepare artifacts (on an internet-connected machine)
