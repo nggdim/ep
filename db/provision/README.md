@@ -15,6 +15,7 @@ This is **phase 1** (database provisioning). Connecting the application
 ```
 db/provision/
 ├── README.md                  # this file
+├── onboard.ps1                # onboarding CLI / TUI - start here
 ├── provision-postgres.ps1     # orchestrator - runs all steps in order
 ├── schema.sql                 # application schema (idempotent DDL)
 ├── backup-postgres.ps1        # nightly pg_dump backup (registered as a task)
@@ -34,6 +35,51 @@ db/provision/
 
 Every step is idempotent and independently runnable. If a step fails, fix the
 reported issue and re-run either the orchestrator or that single step.
+
+---
+
+## Quick start — onboarding CLI
+
+`onboard.ps1` is the friendly front door to everything below. Run it with no
+arguments in an elevated PowerShell session for an interactive, colored menu:
+
+```powershell
+cd C:\ep\setup\provision
+.\onboard.ps1
+```
+
+```
+ [1] Status dashboard     what is installed / missing, with hints
+ [2] Preparation guide    manual steps (this server has NO internet)
+ [3] Provision database   guided prompts, then runs the orchestrator
+ [4] Open network access  phase 2 (steps\07-network.ps1)
+ [5] Run a backup now     triggers the nightly backup task on demand
+ [6] Verify installation  round-trip check (steps\09-verify.ps1)
+```
+
+The status dashboard checks elevation, disk space, the project directory,
+the PostgreSQL service, the installer (searched for in `C:\ep\setup` by
+default), the data directory, the schema file, the port, and the backup
+task — and tells you the single next step to take. If the installer is
+missing it points you at the preparation guide, since the VM cannot
+download it.
+
+Everything is also scriptable via `-Action` for repeatable, non-interactive
+runs (add `-NoColor` for logs; `NO_COLOR` is honored too):
+
+```powershell
+.\onboard.ps1 -Action status                # exit 1 if any check fails
+.\onboard.ps1 -Action checklist             # print the manual preparation steps
+.\onboard.ps1 -Action provision -SuperPassword '<pw>' -AppPassword '<pw>'
+.\onboard.ps1 -Action network   -SuperPassword '<pw>' -AllowedCidr 10.20.30.0/24
+.\onboard.ps1 -Action verify    -SuperPassword '<pw>' -AppPassword '<pw>'
+.\onboard.ps1 -Action backup
+```
+
+Defaults derive from the project directory (`-ProjectDir`, default `C:\ep`):
+the installer is auto-detected in `C:\ep\setup`, data goes to `C:\ep\pgdata`,
+backups to `C:\ep\pgbackups`. Pass `-InstallerPath`, `-DataDir`, `-BackupDir`
+etc. to override. The sections below describe the same flow done by hand.
 
 ---
 
