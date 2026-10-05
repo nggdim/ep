@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 REGISTRY_HOST="${REGISTRY_HOST:-dpsauatdk01.intra.hkma.gov.hk:8443}"
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$REGISTRY_HOST/dockerhub-proxy/syedayanali28/tois:latest}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$REGISTRY_HOST/dockerhub-proxy/syedayanali28/tois}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
 REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
@@ -41,13 +41,17 @@ npm run build
 IMAGE_REF="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 echo "Building and pushing image: $IMAGE_REF"
 
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_ARGS=(--build-arg "APP_VERSION=$IMAGE_TAG" --build-arg "GIT_SHA=$GIT_SHA" --build-arg "BUILD_TIME=$BUILD_TIME")
+
 if [ "$BUILDER" = "docker" ]; then
   docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
-  docker build -t "$IMAGE_REF" "$REPO_ROOT"
+  docker build "${BUILD_ARGS[@]}" -t "$IMAGE_REF" "$REPO_ROOT"
   docker push "$IMAGE_REF"
 elif [ "$BUILDER" = "podman" ]; then
   podman login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
-  podman build -t "$IMAGE_REF" "$REPO_ROOT"
+  podman build "${BUILD_ARGS[@]}" -t "$IMAGE_REF" "$REPO_ROOT"
   podman push "$IMAGE_REF"
 fi
 

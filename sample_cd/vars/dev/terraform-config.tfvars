@@ -7,6 +7,10 @@ image_tag        = "latest"
 
 replicas       = 1
 container_port = 3000
+
+# DB VM target for the in-app connection testers
+db_probe_host = ""
+db_probe_port = 5432
 service_port   = 80
 service_type   = "ClusterIP"
 node_port      = null

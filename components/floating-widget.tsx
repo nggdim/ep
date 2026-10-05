@@ -11,6 +11,7 @@ import { AdfsTester } from "@/components/testers/adfs-tester"
 import { PostgresTester } from "@/components/testers/postgres-tester"
 import { NetworkTester } from "@/components/testers/network-tester"
 import { TestHistory } from "@/components/test-history"
+import { VersionBadge } from "@/components/version-badge"
 import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound, Leaf, Network } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
@@ -225,7 +226,10 @@ export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
                   <Zap className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-medium text-foreground">Quick Connection Tester</h2>
+                  <h2 className="text-sm font-medium text-foreground flex items-center gap-2">
+                    Quick Connection Tester
+                    <VersionBadge />
+                  </h2>
                   <p className="text-[10px] text-muted-foreground">Ad-hoc probes — credentials live in Settings</p>
                 </div>
               </div>

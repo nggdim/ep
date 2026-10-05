@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { VersionBadge } from "@/components/version-badge"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -201,6 +202,7 @@ function SettingsPageInner() {
           <span className="text-[10px] text-muted-foreground">
             {completedCount} / {totalCount} configured
           </span>
+          <VersionBadge />
         </div>
         <div className="flex-1" />
         <Link

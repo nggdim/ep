@@ -19,11 +19,22 @@ variable "app_name" {
 
 variable "image_repository" {
   type    = string
-  default = "dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
+  default = "dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois"
 }
 
 variable "image_tag" {
   type = string
+}
+
+variable "db_probe_host" {
+  type        = string
+  default     = ""
+  description = "DB VM IP/host prefilled in the in-app Network/Postgres testers"
+}
+
+variable "db_probe_port" {
+  type    = number
+  default = 5432
 }
 
 variable "container_port" {

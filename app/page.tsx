@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { useIntegrationDefaults } from "@/lib/use-integration-defaults"
+import { VersionBadge } from "@/components/version-badge"
 
 type DataSourceKind = "dremio" | "postgres" | "supabase"
 const DATA_SOURCE_STORAGE_KEY = "ep_data_source"
@@ -306,6 +307,7 @@ export default function Page() {
               <span className="text-primary">.</span>
             </h1>
             <span className="text-xs text-muted-foreground">SQL Workbench</span>
+            <VersionBadge />
           </div>
 
           <DropdownMenu>

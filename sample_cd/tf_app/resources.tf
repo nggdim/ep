@@ -64,6 +64,50 @@ resource "kubernetes_deployment_v1" "app" {
           image             = "${var.image_repository}:${var.image_tag}"
           image_pull_policy = "Always"
 
+          env {
+            name  = "APP_VERSION"
+            value = var.image_tag
+          }
+          env {
+            name  = "ENV_NAME"
+            value = var.env_name
+          }
+          env {
+            name = "POD_NAME"
+            value_from {
+              field_ref { field_path = "metadata.name" }
+            }
+          }
+          env {
+            name = "POD_IP"
+            value_from {
+              field_ref { field_path = "status.podIP" }
+            }
+          }
+          env {
+            name = "NODE_NAME"
+            value_from {
+              field_ref { field_path = "spec.nodeName" }
+            }
+          }
+          env {
+            name = "NODE_IP"
+            value_from {
+              field_ref { field_path = "status.hostIP" }
+            }
+          }
+          dynamic "env" {
+            for_each = var.db_probe_host != "" ? [1] : []
+            content {
+              name  = "DB_PROBE_HOST"
+              value = var.db_probe_host
+            }
+          }
+          env {
+            name  = "DB_PROBE_PORT"
+            value = tostring(var.db_probe_port)
+          }
+
           port {
             container_port = var.container_port
             name           = "http"
