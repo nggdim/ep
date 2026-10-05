@@ -7,6 +7,7 @@
     standalone when you are ready to connect the application:
 
         .\07-network.ps1 -SuperPassword '<pw>' -AllowedCidr '10.20.30.0/24'
+        .\07-network.ps1 -SuperPassword '<pw>' -AllowedCidr '10.1.1.5,10.1.1.6'   # individual k8s node IPs
 
     It performs, atomically per re-run:
       - ALTER SYSTEM SET listen_addresses = '*'
@@ -42,8 +43,11 @@ $ErrorActionPreference = "Stop"
 try {
     Write-Step "[07] Network access"
 
-    if ($AllowedCidr -notmatch '^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$') {
-        throw "-AllowedCidr '$AllowedCidr' is not a valid IPv4 address or CIDR (expected e.g. 10.20.30.0/24)."
+    $cidrs = @($AllowedCidr -split '\s*,\s*' | Where-Object { $_ })
+    foreach ($c in $cidrs) {
+        if ($c -notmatch '^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$') {
+            throw "-AllowedCidr entry '$c' is not a valid IPv4 address or CIDR (expected e.g. 10.20.30.0/24 or 10.1.1.5,10.1.1.6)."
+        }
     }
 
     $ctx = Get-PgContext -PgVersion $PgVersion
@@ -60,35 +64,37 @@ try {
         throw "pg_hba.conf not found at '$hbaPath'. Is -DataDir correct?"
     }
     $connType = if (Test-SslConfigured -DataDir $DataDir) { "hostssl" } else { "host" }
-    $rule = "{0,-8}{1,-16}{2,-16}{3,-24}scram-sha-256" -f $connType, $AppDbName, $AppRole, $AllowedCidr
+    $rules = @($cidrs | ForEach-Object { "{0,-8}{1,-16}{2,-16}{3,-24}scram-sha-256" -f $connType, $AppDbName, $AppRole, $_ })
     $marker = "# ep-app network access (managed by provision scripts)"
+    $endMarker = "# end ep-app network access"
 
+    # Drop any previously managed block (legacy single-line or delimited), then append the current one.
     $existing = @(Get-Content $hbaPath)
-    if ($existing -contains $rule) {
-        Write-Host "    pg_hba rule already present: $rule"
+    $kept = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $existing.Count; $i++) {
+        if ($existing[$i] -eq $marker) {
+            $j = [array]::IndexOf($existing, $endMarker, $i)
+            $i = if ($j -ge 0) { $j } else { $i + 1 }
+            continue
+        }
+        $kept.Add($existing[$i])
     }
-    elseif ($existing -contains $marker) {
-        $markerIndex = [array]::IndexOf($existing, $marker)
-        $existing[$markerIndex + 1] = $rule
-        Set-Content -Path $hbaPath -Value $existing -Encoding ascii
-        Write-Host "    Updated managed pg_hba rule to: $rule"
-    }
-    else {
-        Add-Content -Path $hbaPath -Value @("", $marker, $rule) -Encoding ascii
-        Write-Host "    Added pg_hba rule: $rule"
-    }
+    while ($kept.Count -gt 0 -and $kept[$kept.Count - 1] -eq "") { $kept.RemoveAt($kept.Count - 1) }
+    $kept.Add(""); $kept.Add($marker); $rules | ForEach-Object { $kept.Add($_) }; $kept.Add($endMarker)
+    Set-Content -Path $hbaPath -Value $kept -Encoding ascii
+    $rules | ForEach-Object { Write-Host "    pg_hba rule: $_" }
 
-    # 3. Windows Firewall rule scoped to the CIDR.
+    # 3. Windows Firewall rule scoped to the CIDRs.
     $ruleName = "PostgreSQL $Port (ep app)"
     $fwRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
     if ($fwRule) {
-        Set-NetFirewallRule -DisplayName $ruleName -RemoteAddress $AllowedCidr
-        Write-Host "    Updated firewall rule '$ruleName' -> remote address $AllowedCidr."
+        Set-NetFirewallRule -DisplayName $ruleName -RemoteAddress $cidrs
+        Write-Host "    Updated firewall rule '$ruleName' -> remote address $($cidrs -join ', ')."
     }
     else {
         New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
-            -Protocol TCP -LocalPort $Port -RemoteAddress $AllowedCidr -Profile Domain, Private | Out-Null
-        Write-Host "    Created inbound firewall rule '$ruleName' for TCP $Port from $AllowedCidr."
+            -Protocol TCP -LocalPort $Port -RemoteAddress $cidrs -Profile Domain, Private | Out-Null
+        Write-Host "    Created inbound firewall rule '$ruleName' for TCP $Port from $($cidrs -join ', ')."
     }
 
     # 4. Restart to apply listen_addresses (and pick up pg_hba changes).

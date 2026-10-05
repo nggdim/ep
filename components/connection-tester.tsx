@@ -8,12 +8,13 @@ import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { AdfsTester } from "@/components/testers/adfs-tester"
 import { PostgresTester } from "@/components/testers/postgres-tester"
+import { NetworkTester } from "@/components/testers/network-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound, Leaf } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound, Leaf, Network } from "lucide-react"
 
 export type TestResult = {
   id: string
-  type: "api" | "jdbc" | "odbc" | "openai" | "postgres"
+  type: "api" | "jdbc" | "odbc" | "openai" | "postgres" | "network"
   connectionString: string
   status: "success" | "error" | "pending"
   message: string
@@ -116,6 +117,13 @@ export function ConnectionTester() {
                     <Leaf className="h-4 w-4" />
                     Postgres
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="network"
+                    className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground gap-2"
+                  >
+                    <Network className="h-4 w-4" />
+                    Network
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -137,6 +145,9 @@ export function ConnectionTester() {
                 </TabsContent>
                 <TabsContent value="postgres" className="mt-0">
                   <PostgresTester onResult={addResult} />
+                </TabsContent>
+                <TabsContent value="network" className="mt-0">
+                  <NetworkTester onResult={addResult} />
                 </TabsContent>
               </div>
             </Tabs>

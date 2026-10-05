@@ -124,6 +124,16 @@ export async function runQuery<R extends Record<string, unknown> = Record<string
   })
 }
 
+export function getTarget(input: PostgresConnectionInput): { host: string; port: number } {
+  if (input.mode === "connectionString" || input.connectionString) {
+    if (!input.connectionString) throw new Error("connectionString is required")
+    const url = new URL(input.connectionString.trim())
+    return { host: decodeURIComponent(url.hostname), port: url.port ? Number(url.port) : 5432 }
+  }
+  if (!input.host) throw new Error("host is required in fields mode")
+  return { host: input.host, port: input.port ?? 5432 }
+}
+
 /**
  * Produce a human-safe error message. `pg` errors often carry SQLSTATE codes
  * which are more actionable than the raw message.

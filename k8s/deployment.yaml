@@ -14,6 +14,16 @@ spec:
       labels:
         app: ep
     spec:
+      # The DB firewall rule only admits specific worker nodes (source group PRD-CKSP-KW).
+      # Pin pods to those nodes, otherwise TCP 5432 will time out. Fill in real hostnames:
+      # affinity:
+      #   nodeAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       nodeSelectorTerms:
+      #         - matchExpressions:
+      #             - key: kubernetes.io/hostname
+      #               operator: In
+      #               values: ["<gpu-worker-06>", "<gpu-worker-xx>"]
       containers:
         - name: ep
           # Replace with your Docker registry image path
@@ -24,6 +34,20 @@ spec:
           #   Amazon ECR: 123456789.dkr.ecr.region.amazonaws.com/ep:latest
           image: dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/pyburn/ep:latest
           imagePullPolicy: Always
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: NODE_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            # DB VM (PRD-TOIS-DB) target prefilled in the Network/Postgres testers
+            - name: DB_PROBE_HOST
+              value: "<db-vm-ip>"
+            - name: DB_PROBE_PORT
+              value: "5432"
           ports:
             - containerPort: 3000
               name: http

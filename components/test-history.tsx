@@ -3,7 +3,7 @@
 import type { TestResult } from "@/components/connection-tester"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { CheckCircle2, XCircle, Trash2, History, Globe, Database, Server, Sparkles, Leaf } from "lucide-react"
+import { CheckCircle2, XCircle, Trash2, History, Globe, Database, Server, Sparkles, Leaf, Network } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 
 type Props = {
@@ -18,6 +18,7 @@ const typeIcons: Record<TestResult["type"], typeof Globe> = {
   odbc: Server,
   openai: Sparkles,
   postgres: Leaf,
+  network: Network,
 }
 
 export function TestHistory({ history, onClear, compact = false }: Props) {

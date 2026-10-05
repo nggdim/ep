@@ -9,22 +9,15 @@ import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { AdfsTester } from "@/components/testers/adfs-tester"
 import { PostgresTester } from "@/components/testers/postgres-tester"
+import { NetworkTester } from "@/components/testers/network-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound, Leaf } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound, Leaf, Network } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
 import type { DremioCredentials } from "@/lib/credential-store"
+import type { TestResult } from "@/components/connection-tester"
 
-export type TestResult = {
-  id: string
-  type: "api" | "jdbc" | "odbc" | "openai" | "postgres"
-  connectionString: string
-  status: "success" | "error" | "pending"
-  message: string
-  responseTime?: number
-  timestamp: Date
-  details?: Record<string, unknown>
-}
+export type { TestResult }
 
 interface FloatingWidgetProps {
   defaultOpen?: boolean
@@ -304,6 +297,13 @@ export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
                     <Leaf className="h-3 w-3" />
                     Postgres
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="network"
+                    className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
+                  >
+                    <Network className="h-3 w-3" />
+                    Network
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -326,6 +326,9 @@ export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
                   </TabsContent>
                   <TabsContent value="postgres" className="mt-0">
                     <PostgresTester onResult={addResult} />
+                  </TabsContent>
+                  <TabsContent value="network" className="mt-0">
+                    <NetworkTester onResult={addResult} />
                   </TabsContent>
                 </div>
               </div>

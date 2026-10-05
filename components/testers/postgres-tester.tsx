@@ -9,6 +9,7 @@ import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
 import { Loader2, Play, Eye, EyeOff, Database, Sparkles } from "lucide-react"
 import { getPostgresCredentials, type PostgresCredentials } from "@/lib/credential-store"
+import { RunnerInfoCard, StageList, type Stage } from "@/components/testers/network-diagnostics"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
@@ -26,7 +27,7 @@ export function PostgresTester({ onResult }: Props) {
   const [showPass, setShowPass] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
-
+  const [stages, setStages] = useState<Stage[]>([])
   useEffect(() => {
     const creds = getPostgresCredentials()
     if (creds) hydrate(creds)
@@ -60,6 +61,7 @@ export function PostgresTester({ onResult }: Props) {
   const testConnection = async () => {
     setTesting(true)
     setResult(null)
+    setStages([])
     const startedAt = performance.now()
     try {
       const res = await fetch("/api/postgres/test", {
@@ -68,6 +70,7 @@ export function PostgresTester({ onResult }: Props) {
         body: JSON.stringify(buildBody()),
       })
       const data = await res.json()
+      setStages(data.stages ?? [])
       const ms = Math.round(performance.now() - startedAt)
       const connDisplay =
         mode === "connectionString"
@@ -89,6 +92,10 @@ export function PostgresTester({ onResult }: Props) {
             database: data.database,
             user: data.user,
             version: String(data.version).split(",")[0],
+            clientAddr: data.clientAddr,
+            ssl: data.ssl,
+            stages: data.stages,
+            runner: data.runner,
             pgvector: hasVector,
             schemas: data.schemas,
             extensions: data.extensions,
@@ -101,9 +108,11 @@ export function PostgresTester({ onResult }: Props) {
           type: "jdbc",
           connectionString: connDisplay,
           status: "error",
-          message: data.error ?? `HTTP ${res.status}`,
+          message: data.failedStage
+            ? `[${data.failedStage} failed] ${data.error}`
+            : (data.error ?? `HTTP ${res.status}`),
           responseTime: ms,
-          details: { driver: "postgres" },
+          details: { driver: "postgres", hint: data.hint, stages: data.stages, runner: data.runner },
         }
         setResult(tr)
         onResult(tr)
@@ -140,6 +149,15 @@ export function PostgresTester({ onResult }: Props) {
         Probes connectivity, reports pgvector / pg_trgm availability, and lists non-system schemas.
         Works with PlanetScale Postgres, Neon, Supabase, RDS, or self-hosted.
       </p>
+
+      <RunnerInfoCard
+        onLoad={(info) => {
+          if (!info.defaultTarget || getPostgresCredentials()) return
+          setMode("fields")
+          setHost(info.defaultTarget.host)
+          setPort(info.defaultTarget.port)
+        }}
+      />
 
       <div className="grid gap-4 border-t border-border pt-4">
         <div>
@@ -238,6 +256,7 @@ export function PostgresTester({ onResult }: Props) {
         )}
       </Button>
 
+      {stages.length > 0 && <StageList stages={stages} />}
       {result && <ResultDisplay result={result} />}
     </div>
   )
