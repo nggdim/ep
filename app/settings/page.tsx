@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { VersionBadge } from "@/components/version-badge"
+import { BetaBadge } from "@/components/beta-badge"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -28,6 +28,7 @@ import {
 import { CredentialSettings } from "@/components/credential-settings"
 import { OpenAICredentialSettings } from "@/components/openai-credential-settings"
 import { PostgresCredentialSettings } from "@/components/postgres-credential-settings"
+import { PostgresPinger } from "@/components/postgres-pinger"
 
 import { ApiTester } from "@/components/testers/api-tester"
 import { JdbcTester } from "@/components/testers/jdbc-tester"
@@ -202,7 +203,7 @@ function SettingsPageInner() {
           <span className="text-[10px] text-muted-foreground">
             {completedCount} / {totalCount} configured
           </span>
-          <VersionBadge />
+          <BetaBadge />
         </div>
         <div className="flex-1" />
         <Link
@@ -304,6 +305,8 @@ function SettingsPageInner() {
           </TabsList>
 
           <TabsContent value="setup" className="space-y-6">
+            <PostgresPinger />
+
             <StepCard
               id="dremio"
               stepNumber={1}

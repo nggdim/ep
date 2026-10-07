@@ -10,7 +10,7 @@ import { AdfsTester } from "@/components/testers/adfs-tester"
 import { PostgresTester } from "@/components/testers/postgres-tester"
 import { NetworkTester } from "@/components/testers/network-tester"
 import { TestHistory } from "@/components/test-history"
-import { VersionBadge } from "@/components/version-badge"
+import { BetaBadge } from "@/components/beta-badge"
 import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound, Leaf, Network } from "lucide-react"
 
 export type TestResult = {
@@ -51,7 +51,7 @@ export function ConnectionTester() {
             <Zap className="h-6 w-6 text-primary" />
           </div>
           <h1 className="text-2xl font-semibold text-foreground">Connection Tester</h1>
-          <VersionBadge />
+          <BetaBadge />
         </div>
         <p className="text-muted-foreground">Securely test your API endpoints, JDBC, ODBC, and OpenAI API connections</p>
         <div className="flex items-center gap-4 mt-4 text-sm text-muted-foreground">

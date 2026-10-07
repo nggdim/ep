@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { VersionBadge } from "@/components/version-badge"
+import { BetaBadge } from "@/components/beta-badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -213,7 +213,7 @@ export default function WorkspacesPage() {
         <div className="flex items-center gap-2">
           <FolderOpen className="h-5 w-5 text-amber-500" />
           <h1 className="text-lg font-semibold">Workspace Builder</h1>
-          <VersionBadge />
+          <BetaBadge />
         </div>
         
         <div className="flex-1" />

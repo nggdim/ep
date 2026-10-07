@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useRouter } from "next/navigation"
-import { VersionBadge } from "@/components/version-badge"
+import { BetaBadge } from "@/components/beta-badge"
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels"
 
 // shadcn sidebar
@@ -1262,7 +1262,7 @@ export default function ChatPage() {
                 : "New chat"
               }
             </span>
-            <VersionBadge />
+            <BetaBadge />
             {openZen.available && (
               <ModelSelector
                 value={openZen.selectedModel}

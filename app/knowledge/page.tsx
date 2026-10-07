@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
-import { VersionBadge } from "@/components/version-badge"
+import { BetaBadge } from "@/components/beta-badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -283,7 +283,7 @@ export default function KnowledgePage() {
           </div>
           <h1 className="text-base font-semibold">Knowledge Base</h1>
           <span className="text-[10px] text-muted-foreground">pgvector · hybrid retrieval · RRF</span>
-          <VersionBadge />
+          <BetaBadge />
         </div>
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
