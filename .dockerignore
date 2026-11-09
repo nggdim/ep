@@ -1,31 +1,16 @@
-# Dependencies
 node_modules
-
-# Build outputs
 .next
 out
-
-# Development files
+coverage
 .git
-.gitignore
-*.md
-
-# IDE
+.local
+.env*
+!.env.example
+.agents
+.copilot
 .vscode
 .idea
-
-# Debug
+*.tsbuildinfo
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Local env files
-.env*.local
-.env
-
-# Kubernetes manifests (not needed in image)
-k8s/
-
-# Docker files
 Dockerfile
 .dockerignore

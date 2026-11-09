@@ -2,41 +2,33 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - 'v*'
+    branches: [main, master]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (optional, defaults to branch/commit)'
+        description: Image tag (optional, defaults to branch/commit)
         required: false
         type: string
 
+permissions:
+  contents: read
+
 env:
-  # Docker Hub repository name
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/ep
 
 jobs:
   build-and-push:
-    # <CHANGE> Only run on the organization repo, not on personal repo mirror
     if: github.repository == 'nggdim/ep'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    
-    permissions:
-      contents: read
-      packages: write
-    
     steps:
       - name: Check required secrets
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
         run: |
-          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
-            echo "::error::DOCKER_USERNAME secret is not set or not accessible (secrets are not available in PR workflows)"
-            exit 1
-          fi
-          if [ -z "${{ secrets.DOCKER_TOKEN }}" ]; then
-            echo "::error::DOCKER_TOKEN secret is not set"
+          if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_TOKEN" ]; then
+            echo "::error::DOCKER_USERNAME and DOCKER_TOKEN are required to publish the image."
             exit 1
           fi
 
@@ -52,23 +44,18 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
-            # For manual workflow dispatch with custom tag
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
-            # Tag with branch name
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=ref,event=branch
-            # Tag with git tag (v1.0.0 -> 1.0.0)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Tag with commit SHA (short)
             type=sha,prefix=
-            # Latest tag for main/master branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
 
       - name: Build and push Docker image
@@ -83,4 +70,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Image digest
-        run: echo "Image pushed with digest ${{ steps.build-push.outputs.digest }}"
+        env:
+          IMAGE_DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: echo "Image pushed with digest $IMAGE_DIGEST"

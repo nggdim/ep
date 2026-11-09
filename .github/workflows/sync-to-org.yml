@@ -1,29 +1,59 @@
-# .github/workflows/sync-to-org.yml
 name: Sync to Organization Repo (nggdim)
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-to-org
+  cancel-in-progress: false
 
 jobs:
   sync:
-    if: github.repository != 'nggdim/ep'
+    if: github.repository == 'pybern/ep'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Check sync credentials
+        env:
+          ORG_REPO_PAT: ${{ secrets.ORG_REPO_PAT }}
+        run: |
+          if [ -z "$ORG_REPO_PAT" ]; then
+            echo "::error::ORG_REPO_PAT is required to sync and trigger organization workflows."
+            exit 1
+          fi
+
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          path: source
           persist-credentials: false
 
-      - name: Push to organization repo
+      - name: Checkout organization repository
+        uses: actions/checkout@v4
+        with:
+          repository: nggdim/ep
+          ref: main
+          token: ${{ secrets.ORG_REPO_PAT }}
+          path: target
+
+      - name: Replace files while preserving organization history
+        working-directory: target
         env:
-          PAT: ${{ secrets.ORG_REPO_PAT }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
-          if git remote get-url org >/dev/null 2>&1; then
-            git remote set-url org https://x-access-token:${PAT}@github.com/nggdim/ep. git
-          else
-            git remote add org https://x-access-token:${PAT}@github.com/nggdim/ep.git
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --update-shallow ../source HEAD
+          git read-tree --reset -u FETCH_HEAD
+          if git diff --cached --quiet; then
+            echo "Organization repository already matches the source."
+            exit 0
           fi
-          git push org main --force
+          git commit -m "Sync codebase from pybern/ep at $SOURCE_SHA" \
+            -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin HEAD:main

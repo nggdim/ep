@@ -1,50 +1,24 @@
-# Stage 1: Dependencies
-FROM node:20-alpine AS deps
-RUN apk add --no-cache libc6-compat
+FROM node:24-bookworm-slim AS deps
 WORKDIR /app
-
-# Copy package files
 COPY package.json package-lock.json ./
-
-# Install dependencies
 RUN npm ci
 
-# Stage 2: Build
-FROM node:20-alpine AS builder
+FROM node:24-bookworm-slim AS builder
 WORKDIR /app
-
+ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-# Build the Next.js application
 RUN npm run build
 
-# Stage 3: Production
-FROM node:20-alpine AS runner
+FROM node:24-bookworm-slim AS runner
 WORKDIR /app
-
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-
-ARG APP_VERSION=dev
-ARG GIT_SHA=
-ARG BUILD_TIME=
-ENV APP_VERSION=$APP_VERSION GIT_SHA=$GIT_SHA BUILD_TIME=$BUILD_TIME
-
-# Create non-root user for security
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
-# Copy the standalone build output
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-USER nextjs
-
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+RUN mkdir -p .local && chown node:node .local
+USER node
 EXPOSE 3000
-
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
 CMD ["node", "server.js"]
