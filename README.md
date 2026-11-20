@@ -80,11 +80,12 @@ available. Configuration keeps its administrator diagnostics.
 
 ## Connection configuration
 
-### Environment-first connections
+### Connection precedence
 
 Copy `.env.example` to `.env.local` for a new setup (do not overwrite an existing
-env file). The LLM and database groups independently take precedence over saved
-configuration. Set `LLM_BASE_URL` (including `/v1` where applicable), `LLM_MODEL`,
+env file). A provider row saved in PostgreSQL takes precedence over the entire
+`LLM_*` group, including an explicit `false` for certificate verification. Until
+there is a row, set `LLM_BASE_URL` (including `/v1` where applicable), `LLM_MODEL`,
 and optionally `LLM_API_KEY`, `LLM_REASONING_EFFORT`,
 `LLM_PLANNING_OUTPUT_TOKENS`, `LLM_CHART_OUTPUT_TOKENS` and
 `LLM_EXPLANATION_OUTPUT_TOKENS`. Token limits accept whole numbers from 256 to
@@ -97,17 +98,85 @@ Environment connection groups are complete replacements, not field-by-field
 merges: omitted credentials are empty, never inherited from a different endpoint.
 Leave every variable in a group unset or blank to use that group's existing
 JSON/PostgreSQL configuration. Partial or invalid environment groups fail
-explicitly; they do not fall back. A complete environment LLM group avoids
-reading the PostgreSQL settings table.
+explicitly when selected; they do not fall back. If a database is configured
+but unreachable, the app reports the error rather than silently switching providers.
 
 Next.js loads `.env.local` server-side. On deployment, set these same variables
 in the host's environment settings. Do not use `NEXT_PUBLIC_` for credentials.
 Restart/redeploy after editing variables. The Configuration page displays and
-tests effective connections; saving an environment-managed group is rejected
-with instructions to edit the environment instead. Other groups retain normal
-saving behavior. Environment values are not migrated to configuration storage,
-and existing saved connections remain available when env groups are removed.
+tests effective connections. Initialize PostgreSQL and use **Save settings** to
+override the LLM defaults without a redeploy. On the first save, leaving the
+key unchanged retains it for the same endpoint in the saved row. Database
+bootstrap settings supplied through `DB_*` remain environment-managed.
 `AI_GATEWAY_API_KEY` retains its Gateway-only precedence over `LLM_API_KEY`.
+
+### Strict providers: compatibility settings, raw console and mock provider
+
+For deployments where the model endpoint cannot be reached during development,
+everything needed to diagnose and correct a provider mismatch is in the browser
+on **Configuration**, with no server or CLI access:
+
+- **Provider compatibility (advanced)** adapts every request the app sends
+  (connection test, request builder, chat and research). All fields are optional
+  and the defaults change nothing. Start from an example, edit, test with the
+  unsaved values, then save.
+  - *Structured output*: `json_schema` (default), `json_object` (provider JSON
+    mode, with the schema added to the prompt) or `prompt` (no `response_format`,
+    schema in the prompt only). In the last two, JSON-expecting calls run without
+    streaming so code fences and `<think>` tags around the JSON can be removed.
+  - *Stream responses*: off requests whole replies and replays them as a stream,
+    for gateways that cannot stream (also applies to the request builder).
+  - *Max-token parameter name*: `max_tokens` or `max_completion_tokens`.
+  - *Parameters to drop*: top-level request fields removed from every chat request,
+    e.g. `temperature, top_p, reasoning_effort`. `messages` and `stream` are protected.
+  - *Extra request parameters*: a JSON object merged into every chat request after
+    the drop list (e.g. `{"chat_template_kwargs":{"enable_thinking":false}}`).
+  - *Custom request headers*: sent on model and catalog requests (e.g. `api-key`,
+    `X-Tenant`). Values are treated as credentials: stored server-side, never
+    returned to the browser (the form shows "Saved value (unchanged)") and redacted
+    from raw output. A custom `Authorization` header replaces the Bearer API key.
+- **Raw request console** sends one request exactly as written (GET or POST, a path
+  under the API base URL, any body text, even invalid JSON) using the unsaved
+  settings above, and shows the provider's unprocessed status, headers and body
+  (up to 256 KB), timings, and plain-language observations: the provider's own
+  error message, HTML login pages, redirects (reported, never followed), SSE delta
+  fields, missing `[DONE]`/`finish_reason`, thinking text in fields the app does
+  not read, and DNS/TLS/proxy failures with their error codes. Choose from sample
+  payloads (the app's own probe with your settings applied, list models, minimal and
+  basic chat, streaming, `json_schema`, `json_object`, prompt-only JSON,
+  `max_completion_tokens`, reasoning effort, tool call, image input, vLLM/SGLang
+  chat-template options). **Copy report** produces a redacted text report to send
+  to developers. The console may incur provider charges.
+- To reproduce **MaaS Qwen: Python chat completions example**, turn off model
+  catalog discovery, enter the MaaS base URL ending in `/v1`, and use the value of
+  `MAAS_SECRET_TOKEN` in **API key** (without `Bearer `). Leave server proxy use
+  off for `trust_env=False`. Use TLS verification with the internal CA in
+  production; turning verification off matches the development script. Select the
+  sample in the raw console, edit the JSON, then **Send raw request**. It posts the
+  two consecutive user messages with `reasoning_effort: "high"` and no extra body fields.
+- To configure deployment defaults rather than save a database override, use **Copy
+  environment lines** to get the equivalent variables:
+  `LLM_STRUCTURED_OUTPUT` (`json_schema|json_object|prompt`), `LLM_STREAMING`
+  (`true|false`), `LLM_MAX_TOKENS_PARAM`, `LLM_DROP_PARAMS` (comma-separated),
+  `LLM_EXTRA_BODY` (JSON object) and `LLM_REQUEST_HEADERS` (JSON object of name to
+  value; keep it in the deployment's secret store).
+
+To exercise these paths without a real model, run the bundled mock provider:
+
+```bash
+npm run mock:llm -- --port 4010 --key sk-mock   # --catalog missing|invalid|html to break /models
+```
+
+then set the API base URL to `http://127.0.0.1:4010/v1` and choose a `mock/*` model.
+Each model ID is a failure scenario (`mock/no-json-schema`, `mock/no-response-format`,
+`mock/strict-params`, `mock/needs-header`, `mock/needs-extra-body`, `mock/no-streaming`,
+`mock/fenced-json`, `mock/thinking-tags`, `mock/null-content`, `mock/refusal`,
+`mock/truncated`, `mock/invalid-json`, `mock/html-page`, `mock/rate-limit`,
+`mock/unavailable-once`, `mock/slow`, `mock/redirect`, `mock/truncated-stream`,
+`mock/reasoning-alias`; `mock/ok` is fully compatible) and the startup output
+describes each. The same server (`scripts/mock-llm-server.ts`) backs the automated
+tests, so a provider quirk found in production can be added as a scenario and kept
+as a regression test.
 
 Open **Configuration** (`/config`) from the desktop or mobile navigation to save
 and test an OpenAI-compatible model API and a direct PostgreSQL connection
@@ -118,7 +187,8 @@ unlock. Configuring connections alone does not import data or trigger model call
 
 Known values are prefilled for a new setup: the Vercel AI Gateway base URL
 (`https://ai-gateway.vercel.sh/v1`), a starter model (`openai/gpt-4.1-mini`),
-PostgreSQL port `5432`, and verified TLS. Saved settings always take precedence.
+PostgreSQL port `5432`, and verified PostgreSQL TLS. API certificate verification
+is off by default. Saved settings always take precedence.
 The starter model is an editable suggestion, not a verified connection.
 Unknown database host, database name, username and credentials remain blank.
 
@@ -165,13 +235,53 @@ to private IPs reachable by the server.
   be entered manually if an endpoint does not support listing. Catalog errors
   are shown explicitly; loading a list does not test model access.
   Image, audio and embedding models remain selectable but may not support chat.
+  **Verify API SSL/TLS certificate** is disabled by default, including for saved
+  API settings without an explicit verification value. An explicit saved `true`
+  remains enabled. Enable verification to authenticate the server; supply an optional
+  PEM **API CA certificate** for an internal certificate authority, or disable
+  verification for that endpoint. Disabling verification leaves HTTPS encryption
+  enabled but does not authenticate the server. It never changes PostgreSQL TLS
+  or global Node.js TLS settings. These settings apply to catalog loading,
+  connection tests, the request builder and saved-model calls. Environment-managed
+  endpoints can set `LLM_VERIFY_SSL=true|false` (blank defaults to false) and
+  `LLM_CA_CERTIFICATE` (PEM; requires HTTPS and verification).
+  **Model request builder** uses the current form, including unsaved endpoint,
+  model, key, thinking effort and SSL settings. It offers editable text and system
+  prompts, `max_tokens` (1–32,768; default 512), `stream` (default false), optional
+  temperature (0–2), basic chat or strict JSON-schema output, and a PNG/JPEG/WebP/GIF
+  image up to 2 MB. Images become base64 `image_url` content with the correct MIME
+  type; image-only requests may leave text empty. Without an upload, the request
+  contains text only: no image field, image placeholder or `image_url` is sent.
+  Removing an image also removes it from subsequent requests. Vision support depends on the
+  model. Streaming displays arriving tokens; non-streaming waits for the complete
+  reply. The preview excludes credentials and omits the image payload. Builder
+  inputs/images are not persisted and do not change research-agent output budgets.
+  Requests have a 60-second server timeout and no automatic retries. Output-limit,
+  schema and transport failures are reported rather than shown as successful tests.
+  The existing 16,000-character reply/thinking and 1 MB response-stream limits
+  still apply. The test suite's local TLS checks use `openssl` to generate
+  temporary self-signed certificates.
+  For strict output, ask for `{"ok":true,"feedback":"..."}` in the prompt.
   **Test connection** sends one strict JSON-schema compatibility probe and
   requires a normally finished, schema-valid assistant response; plain chat
   feedback alone no longer passes. It uses the planning output-token budget
   and the existing 15-second connection-test timeout, and may incur provider
   charges. A passing probe is a basic compatibility check, not a guarantee
   that every research plan will succeed; plans remain strictly validated.
-  **Thinking effort** appears when the selected model's live catalog includes
+  For an on-premises Chat Completions endpoint, turn off **Use provider model catalog**
+  (`LLM_USE_MODEL_CATALOG=false`) and enter the exact model ID and optional thinking
+  effort, e.g. `Qwen3.6-35B-A3B-AWQ` and `high`. No `/models` request is made,
+  even for research; the endpoint decides which efforts it accepts. Use the same
+  request builder in plain chat mode for a basic test; the strict connection
+  probe checks the JSON-schema capability needed for research.
+  Supply the bearer token as the API key (or map your deployment secret to
+  `LLM_API_KEY`). Leave **Use server proxy environment variables** off to connect
+  directly (`LLM_TRUST_ENV=false`); enable it to respect `HTTP_PROXY`, `HTTPS_PROXY`
+  and `NO_PROXY`. In production, enable TLS verification and supply the internal CA
+  certificate if needed. Saved provider settings apply to subsequent model-chat
+  and research requests; a tester request does not change them.
+
+  With catalog discovery enabled (the default), **Thinking effort** appears when the selected model's live catalog includes
   `reasoning_options` with an `effort` entry. Only advertised levels supported
   by this Chat Completions integration are offered (`none`, `minimal`, `low`,
   `medium`, `high`, `xhigh`, `max`); no model-name heuristics are used.
@@ -323,8 +433,17 @@ Gateway environment-key precedence; browser connection overrides are ignored.
 Each actual turn sends its question, conversation context and database metadata
 to your configured AI provider and can incur charges. New query results are
 rendered by the server; requesting an explanation explicitly sends their bounded
-evidence to the provider. Later questions include prior textual results in
-conversation context. Chat and tool activity remain in page memory,
+evidence to the provider. Later questions include each earlier research turn
+as a compact record of what ran, in place of its rendered answer: the
+validated template filters, the catalogue SQL that actually executed
+(including a corrected query), failed queries, stock clarifications, row
+counts, dates covered and up to five leading rows (8 columns, values cut to
+60 characters). The record is capped at 8,000 characters; leading rows are
+dropped first, and a turn whose record still does not fit falls back to its
+answer text. This lets follow-ups such as "same for 2025" or "the top stock"
+reuse the earlier query, and it keeps data-heavy turns from filling the
+64,000-character conversation limit. The planner treats these records as
+context for planning, never as evidence. Chat and tool activity remain in page memory,
 not localStorage, history or dashboard pins. **New chat** clears the conversation.
 Database hostnames, credentials and the configured API base URL are not exposed
 by this workspace. Connection editing, configuration chat and initialization
@@ -395,31 +514,45 @@ Cancellation, timeouts, filtered/refused
 finishes, truncated output, transport and authentication failures do not trigger
 plan repair. Repair remains within the turn's existing deadline and can incur
 up to three additional generation charges (up to five model steps including a draft
-check). The separate single pre-stream HTTP 503 retry remains unchanged.
-HKEX planning and optional explanations use **low thinking effort** when the
-model catalog advertises it, without overwriting the saved model settings.
-Explicit saved `none`/`minimal` efforts are preserved rather than increased.
-If `low` is not advertised, the saved supported effort (or provider default)
-remains in use. Research checks the model catalog before generation; catalog
-failures are reported explicitly, and this metadata request is not a generation
-round trip. Configuration tests and the playground retain their saved effort.
+check). A repair is not started when less than 20 seconds of the turn remain;
+the error then says planning timed out before the repair could start. When the
+planner checked a SQL draft, each repair is also told the draft SQL and its
+outcome (row count and column names, or the validation/database error), since
+repairs have no tools. The separate single pre-stream HTTP 503 retry remains unchanged.
+HKEX planning and optional explanations use the saved thinking effort exactly as
+configured, or the provider default when none is saved; research never lowers or
+raises it. With a saved effort and catalog discovery enabled, research checks the
+model catalog before generation and reports catalog failures explicitly. With no
+saved effort, or with catalog discovery off, no catalog request is made, so providers
+without `GET /models` work. The metadata request is not a generation
+round trip. The check runs alongside the database preflight, and research
+reuses a successfully loaded catalog for up to five minutes for the same endpoint,
+key, TLS and proxy settings; saving settings clears it and reloading the model list refreshes it.
+Configuration tests and the playground retain their saved effort.
 The server validates it, resolves names, queries the saved database and builds
 factual Markdown tables/charts from returned values. No second narrative call
 or chart-selection round trip is made. Query and chart requests normally
 use **one generation call**, or two when checking a SQL draft, excluding the
 existing single 503 retry.
-Invalid plans may also incur up to three correction calls as described above.
+Invalid plans may also incur up to three correction calls as described above,
+and each failed catalogue SQL query at most one (see [Table catalog and agent SQL](#table-catalog-and-agent-sql)).
 Independent stock lookups run concurrently and identical search strings are
-resolved once per turn. After all stock filters are resolved and validated,
-up to three independent queries run concurrently; answer sections retain plan
-order. Each read still uses a separate read-only transaction with the existing
+resolved once per turn. Catalogue SQL queries do not depend on them, so they
+start before the lookups. After all stock filters are resolved and validated,
+up to three independent HKEX queries run concurrently; answer sections retain
+plan order. Each read still uses a separate read-only transaction with the existing
 timeouts and evidence limits, but its transaction setup uses one database
 round trip instead of three. Explicit end dates skip the latest-date scan.
 Preflight schema and coverage remain fresh on every turn; no cross-turn result
 cache is used. Completed chat messages are memoized so typing and subsequent
 streaming updates do not repeatedly parse their Markdown or rebuild charts.
-Up to five stock-name lookups are allowed per plan; ambiguous matches ask
-the user to specify a five-digit code rather than guessing or looping.
+Up to five stock-name lookups are allowed per plan. Within the query's
+currency, an exact stock code or an exact name (ignoring listing suffixes such
+as `-W` or `-R`) wins over names that merely contain the search, so "Ping An"
+resolves to 02318 PING AN rather than also matching PING AN HKDIV. A search
+that still matches several stocks, or none, asks the user for a five-digit
+code (listing the candidates) instead of guessing. Only the queries that need
+that stock are skipped; the rest of the plan still runs.
 Unsupported requests receive a planner clarification, not fabricated data.
 Internal activity records status, SQL templates, parameters and row counts.
 The public conversation shows live provider reasoning in a collapsed Thinking
@@ -432,6 +565,9 @@ about token limits, architecture or generation counts. Public errors explain
 what the user can do next without provider/configuration setup instructions.
 
 ### Table catalog and agent SQL
+
+To document a new SQL source, fill in the [table onboarding worksheet](./docs/data-onboarding-template.md).
+It uses the actual HKEX table and its column dictionary as a worked example.
 
 Use cases with `execution: "database-agent"` open the agent chat and send their
 `useCaseId` to `/api/hkex/chat` (other use cases are rejected there, and
@@ -466,6 +602,15 @@ ids and their full descriptions, including sample rows and example SQL.
 Preflight metadata has a separate 128,000-character limit to accommodate the
 full catalog; query evidence retains its 32,000-character limit. Oversized or
 incomplete metadata fails explicitly rather than silently dropping descriptions.
+Query evidence is different: when a template or catalogue SQL result would
+exceed its limit, the server keeps as many leading rows as fit and marks the
+section as partial, instead of failing. Catalogue SQL rows also stay within a
+24,000-character budget. Only a single row too large to fit on its own is
+rejected. Trend queries are read newest first, so a cut drops the earliest
+dates and keeps the latest ones; rows are then returned oldest first for
+display. A cut stock trend also drops a partly kept oldest date so every shown
+date covers all requested stocks. HKEX source links are returned once per
+result in `sources` rather than on every row, which leaves room for more rows.
 The only model-callable tool is `runSql` (at most one call and two model steps
 per turn; the final step has no tools so it always returns a plan):
 
@@ -475,7 +620,15 @@ per turn; the final step has no tools so it always returns a plan):
 
 The final plan may contain up to three `sqlQueries` alongside the templated HKEX
 queries. The server re-validates and runs them (100-row cap), renders a Markdown
-table with the tables used, and exposes the SQL through **View SQL**. Templated
+table with the tables used, and exposes the SQL through **View SQL**. If a
+final query is rejected by the SQL validator or fails with a PostgreSQL syntax
+or data error (`42xxx` except permissions, or `22xxx`), the server makes **one
+correction request** for that query (`repairSql` in the tool log): no tools, the
+planning output-token limit, the safe error message, and at most 90 seconds
+within the turn deadline (skipped when less than 20 seconds remain). The
+corrected SQL is validated and scoped again before it runs; if that also fails,
+the section says the query could not be completed. Connection, permission,
+read-limit and evidence-size failures are never sent back for correction. Templated
 HKEX queries are still preferred for HKEX rankings/trends because their charts
 are chosen in the plan and validated against HKEX evidence. SQL results get
 their own insight cards and charts (below). Without a catalog (not yet re-initialized) the
@@ -658,7 +811,8 @@ statement timeouts and two-second lock timeouts. There is no arbitrary-SQL tool,
 write tool, URL-fetch tool, or access to other tables. Grant the database user
 only the SELECT privileges it needs in production. Research is bounded to one
 planning generation, three queries, five stock lookups, ten database reads
-including preflight, a 366-day date span, 32,000 characters per evidence result,
+including preflight, a 366-day date span, 32,000 characters per evidence result
+(larger results are cut to the rows that fit and marked partial),
 and a configurable output-token limit per model call (see below). Summaries show
 up to ten rows per query; chart tables retain all returned rows.
 
@@ -680,9 +834,13 @@ keeps the answer. The provider-stream size cap grows with the largest limit
 shortened for display instead of failing the turn.
 
 Time is a safety net rather than the main limit. Each research or explanation
-request has a 290-second server deadline after database preflight (including
-catalog validation), covering planning, queries and the optional chart request,
-with a 320-second browser deadline for the entire request. The chat route sets
+request has a 290-second server deadline that starts before database preflight
+(including catalog validation) and covers planning, queries and the optional
+chart request, with a 320-second browser deadline for the entire request. The
+chart request runs after the answer, so it has its own budget: at most 60
+seconds, ending 5 seconds before the deadline, and it is skipped when less than
+10 seconds would remain. A slow chart therefore adds no chart but never turns
+a completed answer into a timeout. The chat route sets
 `maxDuration = 300` so hosts such as Vercel allow the full turn, including
 the single pre-stream 503 retry described above; SDK-level retries remain disabled.
 Cancellation closes active database reads as well as model generation.
@@ -729,10 +887,14 @@ initializer revokes table access from `PUBLIC`; a separate runtime role needs
 `SELECT`, `INSERT` and `UPDATE` on this table. API saves use a transaction and an
 advisory lock to preserve omitted secrets across concurrent saves.
 
-For file-managed connections, only the PostgreSQL connection (including its password) remains in the
-server-only, gitignored `.local/connections.json`, written atomically with
-owner-only permissions. It is the bootstrap needed to connect before loading
-settings. Override its location with `CONNECTION_CONFIG_PATH` on a private
+The server-only, gitignored `.local/connections.json` holds the PostgreSQL
+connection (including its password), written atomically with owner-only
+permissions. It is the bootstrap needed to connect before loading settings.
+Every API save to an initialized PostgreSQL also mirrors the saved API settings,
+including the API key and custom header values, into this file so it reflects
+the server's last saved provider configuration. PostgreSQL remains authoritative
+while initialized; the file is read only when PostgreSQL has no configuration
+table and no `LLM_*` environment group applies. Override its location with `CONNECTION_CONFIG_PATH` on a private
 persistent volume. `CONFIG_ADMIN_TOKEN` and `AI_GATEWAY_API_KEY` remain environment
 secrets and are never migrated into PostgreSQL.
 
@@ -835,6 +997,7 @@ npm test           # engine tests (vitest)
 npm run lint
 npm run typecheck
 npm run build
+npm run mock:llm   # mock OpenAI-compatible provider with failure scenarios
 ```
 
 Built with Next.js 16 (App Router, Cache Components), React 19, Tailwind CSS v4, Recharts and lucide-react.

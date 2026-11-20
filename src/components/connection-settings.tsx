@@ -1,19 +1,34 @@
 "use client";
 
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
 import { AdminTokenGenerator } from "./admin-token-generator";
 import { ModelChat } from "./model-chat";
+import { TabList, TabPanel } from "./tabs";
+import { ModelRequestBuilder } from "./model-request-builder";
+import { ProviderCompatibility } from "./provider-compatibility";
+import { RawRequestConsole } from "./raw-request-console";
 import { DatabaseInitializer } from "./database-initializer";
 import { sendModelChat } from "@/lib/model-chat-stream";
 import {
   DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiSettings, type DatabaseSettings,
   type PublicConnections, type ConnectionTestResult,
   type DatabaseInitializationResult,
-  modelReasoningEfforts, isReasoningEffort, type ModelCatalog,
+  modelReasoningEfforts, isReasoningEffort, REASONING_EFFORTS, type ModelCatalog, type ReasoningEffort,
   DEFAULT_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, OUTPUT_TOKEN_STEPS, type OutputTokenStep,
 } from "@/lib/connections";
 
 type Kind = "api" | "database";
+type ModelTab = "endpoint" | "model" | "compatibility" | "builder" | "raw" | "chat";
+const MODEL_TABS: readonly { id: ModelTab; label: string }[] = [
+  { id: "endpoint", label: "Endpoint" },
+  { id: "model", label: "Model & limits" },
+  { id: "compatibility", label: "Compatibility" },
+  { id: "builder", label: "Request builder" },
+  { id: "raw", label: "Raw console" },
+  { id: "chat", label: "Chat" },
+];
+// Tabs that edit the model settings form; the others are tools that use the current values.
+const SETTINGS_TABS: readonly ModelTab[] = ["endpoint", "model", "compatibility"];
 type Notice = { error: string } | { saved: true } | ConnectionTestResult;
 const inputClass = "mt-2 w-full border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500";
 const OUTPUT_TOKEN_LABELS: Record<OutputTokenStep, { label: string; hint: string }> = {
@@ -21,6 +36,12 @@ const OUTPUT_TOKEN_LABELS: Record<OutputTokenStep, { label: string; hint: string
   chart: { label: "Chart choice", hint: "Decides whether SQL results get a chart, after the answer." },
   explanation: { label: "Explanation", hint: "Explain these results, on request." },
 };
+// The server returns only header names; a null value keeps the saved value when settings are sent back.
+function apiFromPublic(api: PublicConnections["api"]): ApiSettings {
+  const { hasApiKey, environmentApiKeyAvailable, headerNames, ...settings } = api;
+  void hasApiKey; void environmentApiKeyAvailable;
+  return { ...settings, ...(headerNames?.length ? { requestHeaders: Object.fromEntries(headerNames.map((name) => [name, null])) } : {}) };
+}
 const buttonClass = "min-h-10 border border-slate-600 px-4 text-sm text-slate-200 transition hover:border-sky-400 hover:text-white disabled:cursor-wait disabled:opacity-50";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -76,6 +97,17 @@ export function ConnectionSettings() {
   const [unlocked, setUnlocked] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [unlockError, setUnlockError] = useState("");
+  const [modelTab, setModelTab] = useState<ModelTab>("endpoint");
+  const settingsTab = SETTINGS_TABS.includes(modelTab);
+
+  // Browsers cannot focus a required field inside a hidden tab, so show its tab and then re-run validation.
+  function revealInvalidField(event: SyntheticEvent<HTMLFormElement>) {
+    const tab = (event.target as HTMLElement).closest<HTMLElement>("[role=tabpanel]")?.dataset.tab as ModelTab | undefined;
+    if (!tab || tab === modelTab) return;
+    const form = event.currentTarget;
+    setModelTab(tab);
+    requestAnimationFrame(() => form.reportValidity());
+  }
   const [api, setApi] = useState<ApiSettings>({ ...DEFAULT_CONNECTIONS.api, apiKey: undefined });
   const [database, setDatabase] = useState<DatabaseSettings>({ ...DEFAULT_CONNECTIONS.database, password: undefined });
   const [hasKey, setHasKey] = useState(false);
@@ -84,9 +116,12 @@ export function ConnectionSettings() {
   const [hasPassword, setHasPassword] = useState(false);
   const [notices, setNotices] = useState<Partial<Record<Kind, Notice>>>({});
   const [dirty, setDirty] = useState({ api: false, database: false });
+  const [compatibilityError, setCompatibilityError] = useState("");
+  const [compatibilityRevision, setCompatibilityRevision] = useState(0);
   const [models, setModels] = useState<string[]>([]);
   const [reasoningEfforts, setReasoningEfforts] = useState<ModelCatalog["reasoningEfforts"]>({});
-  const availableEfforts = modelReasoningEfforts({ models, reasoningEfforts }, api.model);
+  const manual = api.useModelCatalog === false;
+  const availableEfforts: readonly ReasoningEffort[] = manual ? REASONING_EFFORTS : modelReasoningEfforts({ models, reasoningEfforts }, api.model);
   const [modelError, setModelError] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelRefresh, setModelRefresh] = useState(0);
@@ -98,14 +133,14 @@ export function ConnectionSettings() {
   const [databaseRevision, setDatabaseRevision] = useState(0);
 
   useEffect(() => {
-    if (!unlocked) return;
+    if (!unlocked || manual) return;
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setModelsLoading(true);
       setModelError("");
       try {
         const result = await request<ModelCatalog>(token, "/api/config/models", "POST", {
-          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey },
+          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey, verifySsl: api.verifySsl, caCertificate: api.caCertificate, trustEnv: api.trustEnv, requestHeaders: api.requestHeaders },
         }, controller.signal);
         if (!controller.signal.aborted) {
           setModels(result.models);
@@ -120,7 +155,7 @@ export function ConnectionSettings() {
       }
     }, 350);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [unlocked, token, api.baseUrl, api.apiKey, modelRefresh]);
+  }, [unlocked, token, api.baseUrl, api.apiKey, api.verifySsl, api.caCertificate, api.trustEnv, api.requestHeaders, manual, modelRefresh]);
 
   function updateApi(change: Partial<ApiSettings>) {
     setApi((current) => ({
@@ -130,7 +165,8 @@ export function ConnectionSettings() {
     }));
     setNotices((current) => ({ ...current, api: undefined }));
     setDirty((current) => ({ ...current, api: true }));
-    if ("baseUrl" in change || "apiKey" in change) {
+    if ("baseUrl" in change || "apiKey" in change || "verifySsl" in change || "caCertificate" in change || "trustEnv" in change || "requestHeaders" in change || "useModelCatalog" in change) {
+      setModelsLoading(false);
       setModels([]);
       setReasoningEfforts({});
       setModelError("");
@@ -148,13 +184,16 @@ export function ConnectionSettings() {
     setUnlockError("");
     try {
       const saved = await request<PublicConnections>(token, "/api/config", "GET");
-      setApi({ baseUrl: saved.api.baseUrl, model: saved.api.model, reasoningEffort: saved.api.reasoningEffort, outputTokens: saved.api.outputTokens, apiKey: undefined });
+      const { hasApiKey, environmentApiKeyAvailable } = saved.api;
+      setApi(apiFromPublic(saved.api));
+      setCompatibilityError("");
+      setCompatibilityRevision((current) => current + 1);
       setSavedApi({ baseUrl: saved.api.baseUrl, model: saved.api.model });
       const { hasPassword: storedPassword, ...db } = saved.database;
       setDatabase({ ...db, password: undefined });
       setSavedDatabase({ host: db.host, port: db.port, database: db.database });
-      setHasKey(saved.api.hasApiKey);
-      setEnvironmentKeyAvailable(saved.api.environmentApiKeyAvailable ?? false);
+      setHasKey(hasApiKey);
+      setEnvironmentKeyAvailable(environmentApiKeyAvailable ?? false);
       setHasPassword(storedPassword);
       setDirty({ api: false, database: false });
       setNotices({});
@@ -174,13 +213,16 @@ export function ConnectionSettings() {
         setNotices((current) => ({ ...current, [kind]: result }));
       } else {
         const result = await request<PublicConnections>(token, "/api/config", "PUT", body);
-        setEnvironmentKeyAvailable(result.api.environmentApiKeyAvailable ?? false);
         if (kind === "api") {
-          setHasKey(result.api.hasApiKey);
-          setApi({ baseUrl: result.api.baseUrl, model: result.api.model, reasoningEffort: result.api.reasoningEffort, outputTokens: result.api.outputTokens, apiKey: undefined });
+          const { hasApiKey, environmentApiKeyAvailable } = result.api;
+          setHasKey(hasApiKey);
+          setEnvironmentKeyAvailable(environmentApiKeyAvailable ?? false);
+          setApi(apiFromPublic(result.api));
+          setCompatibilityRevision((current) => current + 1);
           setSavedApi({ baseUrl: result.api.baseUrl, model: result.api.model });
           setChatRevision((current) => current + 1);
         } else {
+          setEnvironmentKeyAvailable(result.api.environmentApiKeyAvailable ?? false);
           const { hasPassword: storedPassword, ...db } = result.database;
           setHasPassword(storedPassword);
           setDatabase({ ...db, password: undefined });
@@ -242,10 +284,10 @@ export function ConnectionSettings() {
   function buttons(kind: Kind) {
     return (
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <button type="button" className={buttonClass} onClick={() => action(kind, true)}>
+        <button type="button" className={buttonClass} disabled={kind === "api" && !!compatibilityError} onClick={() => action(kind, true)}>
           {busy === `${kind}-test` ? "Waiting for feedback..." : "Test connection"}
         </button>
-        <button type="submit" className={`${buttonClass} border-sky-500 text-sky-300`}>
+        <button type="submit" className={`${buttonClass} border-sky-500 text-sky-300`} disabled={kind === "api" && !!compatibilityError}>
           {busy === `${kind}-save` ? "Saving..." : "Save settings"}
         </button>
         <span className="meta text-slate-500">{dirty[kind] ? "Unsaved changes" : "Current values"}</span>
@@ -266,25 +308,63 @@ export function ConnectionSettings() {
         <button type="button" className="meta shrink-0 text-slate-400 hover:text-white disabled:opacity-50" onClick={lock} disabled={!!busy}>Lock settings</button>
       </div>
 
-      <form onSubmit={(event) => { event.preventDefault(); void action("api", false); }} className="border border-slate-700 bg-slate-950 p-5 md:p-6">
+      <section aria-labelledby="model-config-title" className="space-y-4">
+        <div>
+          <div className="meta text-slate-500">01 / Model</div>
+          <h2 id="model-config-title" className="mt-2 text-xl font-semibold text-white">OpenAI-compatible API</h2>
+        </div>
+        <TabList prefix="model-config" label="Model configuration" tabs={MODEL_TABS} value={modelTab} onChange={setModelTab} />
+
+      <form
+        hidden={!settingsTab}
+        onSubmit={(event) => { event.preventDefault(); void action("api", false); }}
+        onInvalidCapture={revealInvalidField}
+        className={`border border-slate-700 bg-slate-950 p-5 md:p-6 ${settingsTab ? "" : "hidden"}`}
+      >
         <fieldset disabled={!!busy} aria-busy={busy?.startsWith("api") ?? false}>
-          <legend className="meta text-slate-500">01 / Model endpoint</legend>
-          <h2 className="mt-2 text-xl font-semibold text-white">OpenAI-compatible API</h2>
-          <p className="mb-6 mt-2 text-sm text-slate-400">Sends a small chat completion. Success requires actual, non-empty assistant feedback, not just HTTP 200.</p>
-          <div className="grid gap-5 sm:grid-cols-2">
+          <legend className="sr-only">Model endpoint settings</legend>
+          <p className="mb-6 text-sm text-slate-400">Sends a small chat completion. Success requires actual, non-empty assistant feedback, not just HTTP 200.</p>
+          <TabPanel prefix="model-config" id="endpoint" active={modelTab === "endpoint"} className="grid gap-5 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <Field label="API base URL" hint="Include the version prefix (for example /v1), not /chat/completions. Local endpoints are supported.">
                 <input className={inputClass} type="url" required value={api.baseUrl} onChange={(e) => updateApi({ baseUrl: e.target.value })} placeholder={DEFAULT_CONNECTIONS.api.baseUrl} />
               </Field>
             </div>
-            <div className="min-w-0 space-y-4 sm:col-span-2">
+            <div className="sm:col-span-2">
+              <Field label="API key" hint={usesEnvironmentKey ? "Using server AI_GATEWAY_API_KEY for Vercel AI Gateway. It overrides the configured key; Test connection verifies access." : hasKey ? "A key is saved on the server." : "Optional for local or unauthenticated providers."}>
+                <input className={inputClass} type="password" autoComplete="new-password" disabled={usesEnvironmentKey} value={api.apiKey ?? ""} onChange={(e) => updateApi({ apiKey: e.target.value })} placeholder={usesEnvironmentKey ? "Using server environment key" : hasKey && api.apiKey === undefined ? "Saved key (unchanged)" : "API key"} />
+              </Field>
+              <button type="button" className="mt-2 text-xs text-slate-400 underline hover:text-white" onClick={() => updateApi({ apiKey: "" })}>Remove key on save</button>
+              {api.apiKey === "" && !usesEnvironmentKey && <p className="mt-1 text-xs text-amber-400">The current form has no API key.</p>}
+            </div>
+            <div className="sm:col-span-2">
+              <label className="flex items-center gap-3 text-sm text-slate-300">
+                <input aria-label="Verify API SSL certificate" type="checkbox" checked={api.verifySsl === true} onChange={(event) => updateApi({ verifySsl: event.target.checked, ...(event.target.checked ? {} : { caCertificate: "" }) })} className="size-4 accent-sky-500" />
+                Verify API SSL/TLS certificate (recommended)
+              </label>
+              {api.verifySsl !== true && <p className="mt-2 text-xs text-amber-400">Certificate verification is disabled for this model endpoint. HTTPS remains encrypted, but the server identity is not verified.</p>}
+            </div>
+            <label className="flex items-center gap-3 text-sm text-slate-300 sm:col-span-2">
+              <input type="checkbox" checked={api.trustEnv === true} onChange={(e) => updateApi({ trustEnv: e.target.checked })} />
+              Use server proxy environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+            </label>
+            {api.verifySsl === true && <div className="sm:col-span-2">
+              <Field label="API CA certificate (optional)" hint="PEM format. Leave blank to use the system trust store. Applies to HTTPS model calls and catalog loading.">
+                <textarea aria-label="API CA certificate" className={`${inputClass} font-mono text-xs`} rows={4} value={api.caCertificate ?? ""} onChange={(event) => updateApi({ caCertificate: event.target.value })} placeholder="-----BEGIN CERTIFICATE-----" />
+              </Field>
+            </div>}
+          </TabPanel>
+          <TabPanel prefix="model-config" id="model" active={modelTab === "model"} className="min-w-0 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-slate-300">Provider model catalog</p>
-                <button type="button" className={buttonClass} disabled={modelsLoading} onClick={() => setModelRefresh((current) => current + 1)}>
+                <label className="flex items-center gap-3 text-sm text-slate-300">
+                  <input type="checkbox" checked={!manual} onChange={(e) => updateApi({ useModelCatalog: e.target.checked })} />
+                  Use provider model catalog
+                </label>
+                {!manual && <button type="button" className={buttonClass} disabled={modelsLoading} onClick={() => setModelRefresh((current) => current + 1)}>
                   {modelsLoading ? "Loading models..." : models.length ? "Refresh models" : "Load models"}
-                </button>
+                </button>}
               </div>
-              <Field label="Model" hint="Type to search, select a suggestion, or enter a custom model ID. Clear the field to browse all models. Qwen is listed under alibaba on Vercel.">
+              <Field label="Model" hint={manual ? "Enter the exact model ID supplied by the provider." : "Type to search, select a suggestion, or enter a custom model ID. Clear the field to browse all models. Qwen is listed under alibaba on Vercel."}>
                 <input
                   aria-label="Model"
                   className={inputClass}
@@ -346,33 +426,41 @@ export function ConnectionSettings() {
                 </div>
               </fieldset>
               <div aria-live="polite" className="text-xs leading-relaxed text-slate-500">
-                {modelError ? <p role="alert" className="text-rose-300">{modelError}</p> : modelsLoading ? "Fetching the provider's live catalog..." : models.length ? (
+                {manual ? "Discovery is off. Chats send the selected model and thinking effort without checking /models. Choose an effort your endpoint supports." : modelError ? <p role="alert" className="text-rose-300">{modelError}</p> : modelsLoading ? "Fetching the provider's live catalog..." : models.length ? (
                   <p>{models.length} models available. All catalog models are included; image, audio or embedding models may not support the chat connection test.</p>
                 ) : "Models load automatically using the current base URL and API key. No selected model or save is required."}
               </div>
-            </div>
-            <div>
-              <Field label="API key" hint={usesEnvironmentKey ? "Using server AI_GATEWAY_API_KEY for Vercel AI Gateway. It overrides the configured key; Test connection verifies access." : hasKey ? "A key is saved on the server." : "Optional for local or unauthenticated providers."}>
-                <input className={inputClass} type="password" autoComplete="new-password" disabled={usesEnvironmentKey} value={api.apiKey ?? ""} onChange={(e) => updateApi({ apiKey: e.target.value })} placeholder={usesEnvironmentKey ? "Using server environment key" : hasKey && api.apiKey === undefined ? "Saved key (unchanged)" : "API key"} />
-              </Field>
-              <button type="button" className="mt-2 text-xs text-slate-400 underline hover:text-white" onClick={() => updateApi({ apiKey: "" })}>Remove key on save</button>
-              {api.apiKey === "" && !usesEnvironmentKey && <p className="mt-1 text-xs text-amber-400">The current form has no API key.</p>}
-            </div>
-          </div>
-          <p className="mt-5 text-xs text-slate-500">The test may incur a small provider charge. Uses POST /chat/completions with a 15-second timeout.</p>
-          {buttons("api")}
-          <Feedback notice={notices.api} />
+          </TabPanel>
+          <TabPanel prefix="model-config" id="compatibility" active={modelTab === "compatibility"}>
+            <ProviderCompatibility key={`compatibility-${compatibilityRevision}`} api={api} onChange={updateApi} onError={setCompatibilityError} defaultOpen />
+          </TabPanel>
+          {settingsTab && <>
+            <p className="mt-5 text-xs text-slate-500">The test may incur a small provider charge. Uses POST /chat/completions with a 15-second timeout.</p>
+            {buttons("api")}
+            <Feedback notice={notices.api} />
+          </>}
         </fieldset>
       </form>
 
-      <ModelChat
-        key={`chat-${chatRevision}`}
-        model={savedApi.model}
-        baseUrl={savedApi.baseUrl}
-        unsavedChanges={dirty.api}
-        disabled={!!busy}
-        onSend={(messages, signal, onText, onReasoning) => sendModelChat(token, messages, signal, onText, onReasoning)}
-      />
+      <TabPanel prefix="model-config" id="builder" active={modelTab === "builder"}>
+        <ModelRequestBuilder token={token} settings={api} disabled={!!busy} />
+      </TabPanel>
+
+      <TabPanel prefix="model-config" id="raw" active={modelTab === "raw"}>
+        <RawRequestConsole token={token} settings={api} disabled={!!busy} />
+      </TabPanel>
+
+      <TabPanel prefix="model-config" id="chat" active={modelTab === "chat"}>
+        <ModelChat
+          key={`chat-${chatRevision}`}
+          model={savedApi.model}
+          baseUrl={savedApi.baseUrl}
+          unsavedChanges={dirty.api}
+          disabled={!!busy}
+          onSend={(messages, signal, onText, onReasoning) => sendModelChat(token, messages, signal, onText, onReasoning)}
+        />
+      </TabPanel>
+      </section>
 
       <form onSubmit={(event) => { event.preventDefault(); void action("database", false); }} className="border border-slate-700 bg-slate-950 p-5 md:p-6">
         <fieldset disabled={!!busy} aria-busy={busy?.startsWith("database") ?? false}>

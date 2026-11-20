@@ -1,19 +1,26 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "pg";
-import { APICallError, createUIMessageStream, createUIMessageStreamResponse, streamText, type UIMessage, type LanguageModel, type TextStreamPart, type ToolSet } from "ai";
+import { APICallError, createUIMessageStream, createUIMessageStreamResponse, generateText, simulateStreamingMiddleware, streamText, wrapLanguageModel, type LanguageModelMiddleware, type ModelMessage, type UIMessage, type LanguageModel, type TextStreamPart, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import {
-  DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiSettings, type Connections, type ConnectionTestResult,
+  DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiEndpointSettings, type ApiSettings, type Connections, type ConnectionTestResult,
   isReasoningEffort, modelReasoningEfforts, type ModelCatalog, type ReasoningEffort,
   type DatabaseSettings, type PublicConnections,
   MAX_CHAT_MESSAGES, MAX_CHAT_MESSAGE_CHARS, MAX_CHAT_TOTAL_CHARS, type ModelChatMessage, type ModelChatMetadata, type ModelChatToolActivity,
   HKEX_SERVER_TIMEOUT_MS, isOutputTokenLimit, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, OUTPUT_TOKEN_STEPS, outputTokenLimit, type OutputTokenLimits,
+  isMaxTokensParam, isStructuredOutputMode, MAX_TOKENS_PARAMS, STRUCTURED_OUTPUT_MODES, type ProviderOverrides, type RequestHeaders,
 } from "@/lib/connections";
+import { CONNECTION_PROBE_PROMPT, MAX_TEST_IMAGE_BYTES, modelTestBody, TEST_IMAGE_TYPES, type ModelTestRequest } from "@/lib/model-tester";
+import {
+  applyProviderOverrides, BLOCKED_HEADER_NAMES, BODY_KEY_PATTERN, extractJsonText, HEADER_NAME_PATTERN, MAX_DROP_PARAMS,
+  MAX_EXTRA_BODY_CHARS, MAX_REQUEST_HEADERS, PROTECTED_BODY_KEYS, providerHeaders,
+} from "@/lib/provider-request";
+import { fetchApi } from "./api-transport";
 
 export class ConnectionError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -60,7 +67,7 @@ function secret(value: unknown, previous: string | undefined, label: string) {
   return value === undefined ? previous ?? "" : text(value, label, 16384);
 }
 
-export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.api): Pick<ApiSettings, "baseUrl" | "apiKey"> {
+export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.api): ApiEndpointSettings {
   const input = object(value);
   const baseUrl = text(input.baseUrl, "Base URL").trim().replace(/\/+$/, "");
   let url: URL;
@@ -68,15 +75,99 @@ export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new ConnectionError("API base URL must use HTTP(S), without credentials, a query string or a fragment.");
   }
-  const apiKey = secret(input.apiKey, previous.apiKey, "API key");
+  const sameEndpoint = baseUrl === previous.baseUrl;
+  const apiKey = secret(input.apiKey, sameEndpoint ? previous.apiKey : undefined, "API key");
   if (/[\r\n]/.test(apiKey)) throw new ConnectionError("API key cannot contain line breaks.");
-  if (apiKey && url.protocol !== "https:") {
+  const requestHeaders = parseRequestHeaders(input.requestHeaders, sameEndpoint ? previous.requestHeaders : undefined);
+  if ((apiKey || requestHeaders) && url.protocol !== "https:") {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     if (host !== "localhost" && host !== "::1" && !/^127\./.test(host)) {
-      throw new ConnectionError("Use HTTPS when sending an API key, except to a local loopback endpoint.");
+      throw new ConnectionError("Use HTTPS when sending an API key or custom headers, except to a local loopback endpoint.");
     }
   }
-  return { baseUrl, apiKey };
+  if (input.verifySsl !== undefined && typeof input.verifySsl !== "boolean") {
+    throw new ConnectionError("SSL certificate verification must be enabled or disabled.");
+  }
+  if (input.trustEnv !== undefined && typeof input.trustEnv !== "boolean") {
+    throw new ConnectionError("Environment proxy use must be enabled or disabled.");
+  }
+  const caCertificate = input.caCertificate === undefined ? undefined : text(input.caCertificate, "API CA certificate", 32768).trim();
+  if (caCertificate && (url.protocol !== "https:" || input.verifySsl !== true || !caCertificate.includes("-----BEGIN CERTIFICATE-----"))) {
+    throw new ConnectionError("An API CA certificate requires HTTPS with certificate verification enabled and must be PEM encoded.");
+  }
+  return {
+    baseUrl, apiKey,
+    ...(input.trustEnv === undefined ? {} : { trustEnv: input.trustEnv }),
+    ...(input.verifySsl === undefined ? {} : { verifySsl: input.verifySsl }),
+    ...(caCertificate === undefined ? {} : { caCertificate }),
+    ...(requestHeaders ? { requestHeaders } : {}),
+  };
+}
+
+function parseRequestHeaders(value: unknown, previous: RequestHeaders | undefined): RequestHeaders | undefined {
+  if (value === undefined || value === null) return undefined;
+  const input = object(value);
+  const entries = Object.entries(input);
+  if (!entries.length) return undefined;
+  if (entries.length > MAX_REQUEST_HEADERS) throw new ConnectionError(`Use at most ${MAX_REQUEST_HEADERS} custom request headers.`);
+  const seen = new Set<string>();
+  const headers: RequestHeaders = {};
+  for (const [name, raw] of entries) {
+    const key = name.toLowerCase();
+    if (!HEADER_NAME_PATTERN.test(name)) throw new ConnectionError(`"${name.slice(0, 40)}" is not a valid header name.`);
+    if (BLOCKED_HEADER_NAMES.some((blocked) => blocked === key)) throw new ConnectionError(`The ${name} header is managed by the app and cannot be customised.`);
+    if (seen.has(key)) throw new ConnectionError(`The ${name} header is listed more than once.`);
+    seen.add(key);
+    let headerValue: string;
+    if (raw === null) {
+      const saved = Object.entries(previous ?? {}).find(([savedName, savedValue]) => savedName.toLowerCase() === key && typeof savedValue === "string");
+      if (!saved) throw new ConnectionError(`The ${name} header has no saved value. Enter a value.`);
+      headerValue = saved[1] as string;
+    } else {
+      headerValue = text(raw, `The ${name} header value`, 4096);
+    }
+    if (!headerValue.trim() || /[\r\n]/.test(headerValue)) throw new ConnectionError(`The ${name} header value must be a single non-empty line.`);
+    headers[name] = headerValue.trim();
+  }
+  return headers;
+}
+
+function parseProviderOverrides(input: Record<string, unknown>): ProviderOverrides {
+  if (input.structuredOutput !== undefined && input.structuredOutput !== "" && !isStructuredOutputMode(input.structuredOutput)) {
+    throw new ConnectionError(`Structured output must be one of: ${STRUCTURED_OUTPUT_MODES.join(", ")}.`);
+  }
+  if (input.streaming !== undefined && typeof input.streaming !== "boolean") throw new ConnectionError("Streaming must be enabled or disabled.");
+  if (input.maxTokensParam !== undefined && input.maxTokensParam !== "" && !isMaxTokensParam(input.maxTokensParam)) {
+    throw new ConnectionError(`The max-token parameter must be one of: ${MAX_TOKENS_PARAMS.join(", ")}.`);
+  }
+  let dropParams: string[] | undefined;
+  if (input.dropParams !== undefined && input.dropParams !== null) {
+    if (!Array.isArray(input.dropParams) || input.dropParams.length > MAX_DROP_PARAMS) {
+      throw new ConnectionError(`Parameters to drop must be a list of at most ${MAX_DROP_PARAMS} names.`);
+    }
+    dropParams = [...new Set(input.dropParams.map((name) => {
+      if (typeof name !== "string" || !BODY_KEY_PATTERN.test(name.trim())) throw new ConnectionError("Parameters to drop must be plain request-body key names.");
+      if (PROTECTED_BODY_KEYS.some((key) => key === name.trim())) throw new ConnectionError(`The ${name.trim()} request parameter is managed by the app and cannot be dropped.`);
+      return name.trim();
+    }))];
+  }
+  let extraBody: Record<string, unknown> | undefined;
+  if (input.extraBody !== undefined && input.extraBody !== null) {
+    const body = object(input.extraBody);
+    if (JSON.stringify(body).length > MAX_EXTRA_BODY_CHARS) throw new ConnectionError(`Extra request parameters must fit in ${MAX_EXTRA_BODY_CHARS.toLocaleString("en-US")} characters of JSON.`);
+    for (const key of Object.keys(body)) {
+      if (!BODY_KEY_PATTERN.test(key)) throw new ConnectionError("Extra request parameters must use plain top-level key names.");
+      if (PROTECTED_BODY_KEYS.some((protectedKey) => protectedKey === key)) throw new ConnectionError(`The ${key} request parameter is managed by the app and cannot be set here.`);
+    }
+    extraBody = Object.keys(body).length ? body : undefined;
+  }
+  return {
+    ...(isStructuredOutputMode(input.structuredOutput) ? { structuredOutput: input.structuredOutput } : {}),
+    ...(input.streaming === undefined ? {} : { streaming: input.streaming }),
+    ...(isMaxTokensParam(input.maxTokensParam) ? { maxTokensParam: input.maxTokensParam } : {}),
+    ...(dropParams?.length ? { dropParams } : {}),
+    ...(extraBody ? { extraBody } : {}),
+  };
 }
 
 export function parseApi(value: unknown, previous = DEFAULT_CONNECTIONS.api): ApiSettings {
@@ -84,14 +175,19 @@ export function parseApi(value: unknown, previous = DEFAULT_CONNECTIONS.api): Ap
   const input = object(value);
   const model = text(input.model, "Model", 256).trim();
   if (!model) throw new ConnectionError("A model ID is required.");
+  if (input.useModelCatalog !== undefined && typeof input.useModelCatalog !== "boolean") {
+    throw new ConnectionError("Model catalog discovery must be enabled or disabled.");
+  }
   if (input.reasoningEffort !== undefined && input.reasoningEffort !== "" && !isReasoningEffort(input.reasoningEffort)) {
     throw new ConnectionError("Choose a valid thinking effort or use the provider default.");
   }
   const outputTokens = parseOutputTokens(input.outputTokens);
   return {
     ...endpoint, model,
+    ...(input.useModelCatalog === undefined ? {} : { useModelCatalog: input.useModelCatalog }),
     ...(isReasoningEffort(input.reasoningEffort) ? { reasoningEffort: input.reasoningEffort } : {}),
     ...(outputTokens ? { outputTokens } : {}),
+    ...parseProviderOverrides(input),
   };
 }
 
@@ -136,15 +232,19 @@ export function parseDatabase(value: unknown, previous = DEFAULT_CONNECTIONS.dat
 }
 
 export function publicConnections(settings: Connections): PublicConnections {
-  const { apiKey, ...api } = settings.api;
+  const { apiKey, requestHeaders, ...api } = settings.api;
   const { password, ...database } = settings.database;
   return {
-    api: { ...api, hasApiKey: Boolean(apiKey), ...(process.env.AI_GATEWAY_API_KEY?.trim() ? { environmentApiKeyAvailable: true } : {}) },
+    api: {
+      ...api, hasApiKey: Boolean(apiKey),
+      ...(requestHeaders ? { headerNames: Object.keys(requestHeaders) } : {}),
+      ...(process.env.AI_GATEWAY_API_KEY?.trim() ? { environmentApiKeyAvailable: true } : {}),
+    },
     database: { ...database, hasPassword: Boolean(password) },
   };
 }
 
-function effectiveApiSettings<T extends Pick<ApiSettings, "baseUrl" | "apiKey">>(settings: T): T {
+export function effectiveApiSettings<T extends Pick<ApiSettings, "baseUrl" | "apiKey">>(settings: T): T {
   const environmentKey = process.env.AI_GATEWAY_API_KEY;
   if (!isVercelAiGateway(settings.baseUrl) || !environmentKey?.trim()) return settings;
   if (environmentKey.length > 16384 || /[\0\r\n]/.test(environmentKey)) {
@@ -169,6 +269,9 @@ function apiResponseError(status: number, settings: Pick<ApiSettings, "baseUrl">
   }
   if (status === 502 || status === 504) {
     return new ConnectionError(`API returned HTTP ${status}. ${service} could not complete the upstream request. Wait briefly and resend; if it persists, check provider status. No automatic retry was performed.`, status);
+  }
+  if (status === 400 || status === 422) {
+    return new ConnectionError(`API returned HTTP ${status}. The provider rejected the request body. Open Provider compatibility to change the structured-output mode, drop or rename parameters, or add extra ones, and use the Raw request console to read the provider's own error message.`, 502);
   }
   return new ConnectionError(`API returned HTTP ${status}. Check the saved URL, ${apiKeyHint(settings)}, model and provider access.`, 502);
 }
@@ -203,9 +306,24 @@ export async function loadBootstrapConnections(): Promise<Partial<Connections>> 
   };
 }
 
+function environmentBoolean(key: string) {
+  const value = process.env[key]?.trim();
+  if (!value) return undefined;
+  if (value !== "true" && value !== "false") throw new ConnectionError(`${key} must be true or false.`, 503);
+  return value === "true";
+}
+
+function environmentJson(key: string): unknown {
+  const value = process.env[key]?.trim();
+  if (!value) return undefined;
+  try { return JSON.parse(value); } catch { throw new ConnectionError(`${key} must be valid JSON.`, 503); }
+}
+
 function environmentApi(): ApiSettings | undefined {
   const keys = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_REASONING_EFFORT",
-    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS"];
+    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS",
+    "LLM_VERIFY_SSL", "LLM_CA_CERTIFICATE", "LLM_TRUST_ENV", "LLM_USE_MODEL_CATALOG",
+    "LLM_STRUCTURED_OUTPUT", "LLM_STREAMING", "LLM_MAX_TOKENS_PARAM", "LLM_DROP_PARAMS", "LLM_EXTRA_BODY", "LLM_REQUEST_HEADERS"];
   if (!keys.some((key) => process.env[key]?.trim())) return undefined;
   if (!process.env.LLM_BASE_URL?.trim() || !process.env.LLM_MODEL?.trim()) {
     throw new ConnectionError("Environment configuration requires both LLM_BASE_URL and LLM_MODEL.", 503);
@@ -215,6 +333,16 @@ function environmentApi(): ApiSettings | undefined {
     model: process.env.LLM_MODEL,
     apiKey: process.env.LLM_API_KEY ?? "",
     reasoningEffort: process.env.LLM_REASONING_EFFORT,
+    verifySsl: environmentBoolean("LLM_VERIFY_SSL"),
+    trustEnv: environmentBoolean("LLM_TRUST_ENV"),
+    useModelCatalog: environmentBoolean("LLM_USE_MODEL_CATALOG"),
+    streaming: environmentBoolean("LLM_STREAMING"),
+    structuredOutput: process.env.LLM_STRUCTURED_OUTPUT?.trim() || undefined,
+    maxTokensParam: process.env.LLM_MAX_TOKENS_PARAM?.trim() || undefined,
+    dropParams: process.env.LLM_DROP_PARAMS?.trim() ? process.env.LLM_DROP_PARAMS.split(",").map((name) => name.trim()).filter(Boolean) : undefined,
+    extraBody: environmentJson("LLM_EXTRA_BODY"),
+    requestHeaders: environmentJson("LLM_REQUEST_HEADERS"),
+    ...(process.env.LLM_CA_CERTIFICATE ? { caCertificate: process.env.LLM_CA_CERTIFICATE } : {}),
     outputTokens: Object.fromEntries(OUTPUT_TOKEN_STEPS.map((step) => {
       const value = process.env[`LLM_${step.toUpperCase()}_OUTPUT_TOKENS`];
       return [step, value?.trim() ? Number(value) : undefined];
@@ -243,15 +371,11 @@ function environmentDatabase(): DatabaseSettings | undefined {
   });
 }
 
-export async function loadConfiguredBootstrapConnections(): Promise<Partial<Connections>> {
-  const api = environmentApi();
+export async function configuredDatabase(): Promise<DatabaseSettings | undefined> {
   const database = environmentDatabase();
-  if (api && database) return { api, database };
+  if (database) return database;
   const saved = await loadConnectionDocument();
-  return {
-    ...(api ? { api } : saved.api === undefined ? {} : { api: parseApi(saved.api) }),
-    ...(database ? { database } : saved.database === undefined ? {} : { database: parseDatabase(saved.database) }),
-  };
+  return saved.database === undefined ? undefined : parseDatabase(saved.database);
 }
 
 async function writeConnectionDocument(document: Record<string, unknown>) {
@@ -301,34 +425,33 @@ async function readStoredApi(client: Client): Promise<{ initialized: boolean; ap
   };
 }
 
-async function resolveSavedApi(saved: Partial<Connections>): Promise<ApiSettings | undefined> {
+async function resolveSavedApi(database: DatabaseSettings | undefined): Promise<ApiSettings | undefined> {
+  const stored = database ? await withConfigurationDatabase(database, readStoredApi) : undefined;
+  if (stored?.api) return stored.api;
   const api = environmentApi();
-  if (api) return api;
-  if (!saved.database) return saved.api;
-  const stored = await withConfigurationDatabase(saved.database, readStoredApi);
-  return stored.initialized ? stored.api : saved.api;
+  if (api || stored?.initialized) return api;
+  const saved = await loadConnectionDocument();
+  return saved.api === undefined ? undefined : parseApi(saved.api);
 }
 
 export async function loadConnections(): Promise<Connections> {
-  const saved = await loadConfiguredBootstrapConnections();
+  const database = await configuredDatabase();
   return {
-    api: await resolveSavedApi(saved) ?? structuredClone(DEFAULT_CONNECTIONS.api),
-    database: saved.database ?? structuredClone(DEFAULT_CONNECTIONS.database),
+    api: await resolveSavedApi(database) ?? structuredClone(DEFAULT_CONNECTIONS.api),
+    database: database ?? structuredClone(DEFAULT_CONNECTIONS.database),
   };
 }
 
 export async function loadSavedApi(): Promise<ApiSettings> {
-  const api = environmentApi() ?? await resolveSavedApi(await loadConfiguredBootstrapConnections());
+  const api = await resolveSavedApi(await configuredDatabase());
   if (!api) throw new ConnectionError("Save your API settings before starting a model chat.", 409);
   return api;
 }
 
 export async function loadSavedDatabase(): Promise<DatabaseSettings> {
-  const database = environmentDatabase();
-  if (database) return database;
-  const saved = await loadConnectionDocument();
-  if (saved.database === undefined) throw new ConnectionError("Save your database settings before using database operations.", 409);
-  return parseDatabase(saved.database);
+  const database = await configuredDatabase();
+  if (!database) throw new ConnectionError("Save your database settings before using database operations.", 409);
+  return database;
 }
 
 export function parseChatMessages(value: unknown): ModelChatMessage[] {
@@ -358,12 +481,13 @@ export function updateConnectionStorage<T>(update: () => Promise<T>): Promise<T>
 }
 
 export function saveConnection(kind: "api" | "database", value: unknown): Promise<PublicConnections> {
+  modelCatalogs.clear();
   return updateConnectionStorage(async () => {
-    if (kind === "api" ? environmentApi() : environmentDatabase()) {
+    if (kind === "database" && environmentDatabase()) {
       throw new ConnectionError("This connection is managed by environment variables. Edit .env.local or your deployment environment and restart/redeploy; saved settings would not override it.", 409);
     }
-    const saved = await loadBootstrapConnections();
     if (kind === "database") {
+      const saved = await loadBootstrapConnections();
       const database = parseDatabase(value, saved.database ?? DEFAULT_CONNECTIONS.database);
       // Updating the bootstrap must work even when the old database is unreachable.
       await writeConnectionDocument({ ...saved, database });
@@ -380,7 +504,7 @@ export function saveConnection(kind: "api" | "database", value: unknown): Promis
           await client.query("ROLLBACK");
           return undefined;
         }
-        const api = parseApi(value, stored.api ?? DEFAULT_CONNECTIONS.api);
+        const api = parseApi(value, stored.api ?? environmentApi() ?? DEFAULT_CONNECTIONS.api);
         await client.query(`INSERT INTO public.insightful_configuration (kind, settings)
           VALUES ('api', $1::jsonb) ON CONFLICT (kind)
           DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()`, [JSON.stringify(api)]);
@@ -393,23 +517,32 @@ export function saveConnection(kind: "api" | "database", value: unknown): Promis
         throw error;
       }
     };
-    const database = environmentDatabase() ?? saved.database;
+    const database = await configuredDatabase();
     const stored = database ? await withConfigurationDatabase(database, persistApi) : undefined;
-    const api = stored ?? parseApi(value, saved.api ?? DEFAULT_CONNECTIONS.api);
     if (stored) {
-      try { await removeLegacyApi(); } catch {
-        throw new ConnectionError("API settings were saved in PostgreSQL, but the legacy file could not be cleaned up. Check its permissions and retry.", 500);
+      // The bootstrap file mirrors the saved settings; PostgreSQL stays authoritative while it is initialized.
+      try { await writeConnectionDocument({ ...await loadConnectionDocument(), api: stored }); } catch {
+        throw new ConnectionError("API settings were saved in PostgreSQL, but the bootstrap file could not be updated. Check its permissions and retry.", 500);
       }
-    } else {
-      await writeConnectionDocument({ ...saved, api });
+      return publicConnections({ api: stored, database: database! });
     }
+    if (environmentApi()) throw new ConnectionError("Initialize PostgreSQL on the Configuration page to save an override for the environment provider settings.", 409);
+    const saved = await loadBootstrapConnections();
+    const api = parseApi(value, saved.api ?? DEFAULT_CONNECTIONS.api);
+    await writeConnectionDocument({ ...saved, api });
     return publicConnections({ api, database: database ?? DEFAULT_CONNECTIONS.database });
   });
 }
 
 const TIMEOUT_MS = 15000;
-function redact(value: string, secrets: (string | undefined)[]) {
+export function redact(value: string, secrets: (string | undefined)[]) {
   return secrets.reduce<string>((message, key) => key ? message.split(key).join("[redacted]") : message, value);
+}
+
+/** The API key and long custom header values; short values would corrupt unrelated text when redacted. */
+export function apiSecrets(settings: Pick<ApiEndpointSettings, "apiKey" | "requestHeaders">): string[] {
+  const headerValues = Object.values(settings.requestHeaders ?? {}).filter((value): value is string => typeof value === "string" && value.length >= 8);
+  return [...(settings.apiKey ? [settings.apiKey] : []), ...headerValues];
 }
 
 async function readLimited(response: Response, maxBytes = 65536) {
@@ -432,15 +565,32 @@ async function readLimited(response: Response, maxBytes = 65536) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function listApiModels(settings: Pick<ApiSettings, "baseUrl" | "apiKey">): Promise<string[]> {
+export async function listApiModels(settings: ApiEndpointSettings): Promise<string[]> {
   return (await listApiModelCatalog(settings)).models;
 }
 
-export async function listApiModelCatalog(settings: Pick<ApiSettings, "baseUrl" | "apiKey">, signal?: AbortSignal): Promise<ModelCatalog> {
+// Research turns reuse a recent catalog instead of calling GET /models before every plan.
+const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
+const MODEL_CATALOG_CACHE_SIZE = 16;
+const modelCatalogs = new Map<string, { expires: number; catalog: ModelCatalog }>();
+
+function modelCatalogKey(settings: ApiEndpointSettings) {
+  return createHash("sha256").update(JSON.stringify([
+    settings.baseUrl, settings.apiKey, settings.verifySsl === true, settings.caCertificate, settings.trustEnv === true, settings.requestHeaders,
+  ])).digest("hex");
+}
+
+async function cachedModelCatalog(settings: ApiEndpointSettings, signal?: AbortSignal): Promise<ModelCatalog> {
+  const cached = modelCatalogs.get(modelCatalogKey(effectiveApiSettings(settings)));
+  if (cached && cached.expires > Date.now()) return cached.catalog;
+  return listApiModelCatalog(settings, signal);
+}
+
+export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?: AbortSignal): Promise<ModelCatalog> {
   settings = effectiveApiSettings(settings);
   try {
-    const response = await fetch(`${settings.baseUrl}/models`, {
-      headers: settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {},
+    const response = await fetchApi(settings, `${settings.baseUrl}/models`, {
+      headers: providerHeaders(settings),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
       redirect: "error", cache: "no-store",
     });
@@ -475,10 +625,13 @@ export async function listApiModelCatalog(settings: Pick<ApiSettings, "baseUrl" 
       return [model.id, [...new Set(efforts)]];
     });
     if (!entries.length) throw new ConnectionError("The provider returned an empty model catalog. You can enter a model ID manually.", 502);
-    return {
+    const catalog: ModelCatalog = {
       models: [...new Set(entries.map(([id]) => id))].sort((a, b) => a.localeCompare(b)),
       reasoningEfforts: Object.fromEntries(entries),
     };
+    while (modelCatalogs.size >= MODEL_CATALOG_CACHE_SIZE) modelCatalogs.delete(modelCatalogs.keys().next().value!);
+    modelCatalogs.set(modelCatalogKey(settings), { expires: Date.now() + MODEL_CATALOG_TTL_MS, catalog });
+    return catalog;
   } catch (error) {
     if (error instanceof ConnectionError) throw error;
     if (signal?.aborted) throw new ConnectionError("Model catalog request was cancelled or timed out.", 499);
@@ -489,14 +642,12 @@ export async function listApiModelCatalog(settings: Pick<ApiSettings, "baseUrl" 
   }
 }
 
-async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, preferLow = false): Promise<ApiSettings> {
-  if (!settings.reasoningEffort && !preferLow) return settings;
-  const catalog = await listApiModelCatalog(settings, signal);
+// Only an explicitly saved effort is validated, so providers without GET /models work with the provider default.
+async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, reuseCatalog = false): Promise<ApiSettings> {
+  if (settings.useModelCatalog === false || !settings.reasoningEffort) return settings;
+  const catalog = reuseCatalog ? await cachedModelCatalog(settings, signal) : await listApiModelCatalog(settings, signal);
   const supported = modelReasoningEfforts(catalog, settings.model);
-  if (preferLow && supported.includes("low") && !["none", "minimal"].includes(settings.reasoningEffort ?? "")) {
-    return { ...settings, reasoningEffort: "low" };
-  }
-  if (settings.reasoningEffort && !supported.includes(settings.reasoningEffort)) {
+  if (!supported.includes(settings.reasoningEffort)) {
     throw new ConnectionError("The provider catalog does not advertise the selected thinking effort for this model. Refresh models and select a supported effort, or choose Provider default.");
   }
   return settings;
@@ -514,10 +665,10 @@ async function completeApi(
   const start = Date.now();
   await checkReasoningEffort(settings, signal);
   try {
-    const response = await fetch(`${settings.baseUrl}/chat/completions`, {
+    const response = await fetchApi(settings, `${settings.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
-      body: JSON.stringify({
+      headers: { "Content-Type": "application/json", ...providerHeaders(settings) },
+      body: JSON.stringify(applyProviderOverrides({
         model: settings.model,
         messages,
         max_tokens: maxTokens, stream: false,
@@ -530,7 +681,7 @@ async function completeApi(
           },
         },
         ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
-      }),
+      }, settings)),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       redirect: "error", cache: "no-store",
     });
@@ -564,14 +715,17 @@ async function completeApi(
       throw new ConnectionError("API responded, but returned no non-empty assistant feedback. The test did not pass.", 502);
     }
     let value: unknown;
-    try { value = JSON.parse(reply); } catch {
-      throw new ConnectionError("API returned assistant text instead of valid JSON-schema structured output. Choose a model and endpoint that support strict JSON-schema output for research.", 502);
+    const compatibilityMode = (settings.structuredOutput ?? "json_schema") !== "json_schema";
+    try { value = JSON.parse(compatibilityMode ? extractJsonText(reply) : reply); } catch {
+      throw new ConnectionError(compatibilityMode
+        ? "API returned assistant text that is not valid JSON even in the configured structured-output mode. Check the model's JSON ability or use the Raw request console to inspect the reply."
+        : "API returned assistant text instead of valid JSON-schema structured output. Choose a model and endpoint that support strict JSON-schema output for research, or switch the structured-output mode under Provider compatibility.", 502);
     }
     const probe = connectionProbeSchema.safeParse(value);
     if (!probe.success || !probe.data.feedback.trim()) {
       throw new ConnectionError("API assistant output did not match the requested strict JSON schema. The research compatibility test did not pass.", 502);
     }
-    return { feedback: redact(probe.data.feedback.trim(), [settings.apiKey]), durationMs: Date.now() - start };
+    return { feedback: redact(probe.data.feedback.trim(), apiSecrets(settings)), durationMs: Date.now() - start };
   } catch (error) {
     if (error instanceof ConnectionError) throw error;
     if (signal?.aborted) throw new ConnectionError("Model request was cancelled.", 499);
@@ -582,9 +736,33 @@ async function completeApi(
 
 export async function testApi(settings: ApiSettings): Promise<ConnectionTestResult> {
   const result = await completeApi(settings, [
-    { role: "user", content: 'Return one JSON object matching the requested schema: {"ok":true,"feedback":"Connection confirmed."}. Use a short confirmation for feedback, no Markdown or extra fields.' },
+    { role: "user", content: CONNECTION_PROBE_PROMPT },
   ], outputTokenLimit(settings, "planning"), TIMEOUT_MS);
   return { ok: true, message: "Model feedback and strict JSON-schema output verified. Research plans are still validated on every request.", ...result };
+}
+
+/**
+ * Compatibility for providers that cannot stream, or that cannot enforce json_schema: JSON-expecting calls
+ * then run without streaming so replies wrapped in code fences or thinking tags can be unwrapped first.
+ */
+function providerCompatibilityMiddleware(settings: ProviderOverrides): LanguageModelMiddleware | undefined {
+  const mode = settings.structuredOutput ?? "json_schema";
+  const simulateStreaming = settings.streaming === false;
+  if (!simulateStreaming && mode === "json_schema") return undefined;
+  const expectsJson = (params: { responseFormat?: { type: string } }) => params.responseFormat?.type === "json";
+  const generate: NonNullable<LanguageModelMiddleware["wrapGenerate"]> = async ({ doGenerate, params }) => {
+    const result = await doGenerate();
+    if (mode === "json_schema" || !expectsJson(params)) return result;
+    return { ...result, content: result.content.map((part) => part.type === "text" ? { ...part, text: extractJsonText(part.text) } : part) };
+  };
+  return {
+    specificationVersion: "v4",
+    wrapGenerate: generate,
+    wrapStream: async (options) => {
+      if (!simulateStreaming && !(mode !== "json_schema" && expectsJson(options.params))) return options.doStream();
+      return simulateStreamingMiddleware().wrapStream!({ ...options, doGenerate: () => generate({ ...options, doGenerate: options.doGenerate }) });
+    },
+  };
 }
 
 export type SavedModelRunOptions = {
@@ -592,21 +770,52 @@ export type SavedModelRunOptions = {
   settings: ApiSettings;
   messages: ModelChatMessage[];
   abortSignal: AbortSignal;
+  /** Epoch milliseconds at which the server deadline aborts the turn. */
+  deadline: number;
   onError: (error: unknown) => void;
   onToolActivity: (activity: ModelChatToolActivity) => void;
 };
 export type SavedModelRunner = (options: SavedModelRunOptions) => AsyncIterable<TextStreamPart<ToolSet>>;
 
+export function parseModelTestRequest(value: unknown): ModelTestRequest {
+  const parsed = z.object({
+    prompt: z.string().max(MAX_CHAT_MESSAGE_CHARS),
+    systemPrompt: z.string().max(MAX_CHAT_MESSAGE_CHARS).optional(),
+    image: z.string().max(Math.ceil(MAX_TEST_IMAGE_BYTES / 3) * 4 + 64).optional(),
+    maxTokens: z.number().int().min(1).max(MAX_OUTPUT_TOKENS),
+    stream: z.boolean(),
+    mode: z.enum(["chat", "json"]),
+    temperature: z.number().min(0).max(2).optional(),
+  }).strict().safeParse(value);
+  if (!parsed.success) throw new ConnectionError("Invalid model request. Check prompt length, token limit (1-32,768), streaming, output mode and temperature (0-2).");
+  const request = parsed.data;
+  if (!request.prompt.trim() && !request.image) throw new ConnectionError("Enter a prompt or attach an image.");
+  if (request.image) {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/.exec(request.image);
+    if (!match || !TEST_IMAGE_TYPES.some((type) => type === match[1]) || match[2].length % 4 !== 0 ||
+      Buffer.byteLength(match[2], "base64") > MAX_TEST_IMAGE_BYTES) {
+      throw new ConnectionError("Attach a PNG, JPEG, WebP or GIF image of at most 2 MB, encoded as a base64 data URL.");
+    }
+  }
+  return request;
+}
+
+/** A pending runner (for example one awaiting database preflight) is prepared alongside the model settings. */
 export async function streamChatWithSavedModel(
-  messages: ModelChatMessage[], signal?: AbortSignal, runner?: SavedModelRunner,
+  messages: ModelChatMessage[], signal?: AbortSignal, pendingRunner?: SavedModelRunner | Promise<SavedModelRunner>,
+  tester?: { settings: ApiSettings; request: ModelTestRequest },
 ): Promise<Response> {
-  const savedSettings = effectiveApiSettings(await loadSavedApi());
   const started = Date.now();
-  const timeoutMs = runner ? HKEX_SERVER_TIMEOUT_MS : 60000;
+  const timeoutMs = pendingRunner ? HKEX_SERVER_TIMEOUT_MS : 60000;
+  const deadline = started + timeoutMs;
   const timeout = AbortSignal.timeout(timeoutMs);
   const upstream = new AbortController();
   const abortSignal = AbortSignal.any([...(signal ? [signal] : []), timeout, upstream.signal]);
-  const settings = await checkReasoningEffort(savedSettings, abortSignal, Boolean(runner));
+  const [settings, runner] = await Promise.all([
+    (tester ? Promise.resolve(tester.settings) : loadSavedApi())
+      .then((api) => checkReasoningEffort(effectiveApiSettings(api), abortSignal, Boolean(pendingRunner))),
+    pendingRunner,
+  ]);
   let transportError: ConnectionError | undefined;
   let retryUsed = false;
   // Larger token limits need room for SSE framing (roughly 100-400 bytes per streamed token).
@@ -616,16 +825,18 @@ export async function streamChatWithSavedModel(
   const provider = createOpenAICompatible({
     name: "saved-model",
     baseURL: settings.baseUrl,
-    apiKey: settings.apiKey,
-    supportsStructuredOutputs: Boolean(runner),
+    headers: providerHeaders(settings),
+    supportsStructuredOutputs: Boolean(runner) || tester?.request.mode === "json",
+    transformRequestBody: (body: Record<string, unknown>) =>
+      applyProviderOverrides(tester ? { ...body, ...modelTestBody(settings.model, tester.request) } : body, settings),
     fetch: async (input, init) => {
-      let response = await fetch(input, { ...init, redirect: "error", cache: "no-store" });
+      let response = await fetchApi(settings, input, { ...init, redirect: "error", cache: "no-store" });
       if (runner && response.status === 503 && !retryUsed && !abortSignal.aborted) {
         retryUsed = true;
         await response.body?.cancel();
         console.warn("HKEX model request returned HTTP 503; using the turn's single delayed retry.");
         await delay(1000, undefined, { signal: abortSignal });
-        response = await fetch(input, { ...init, redirect: "error", cache: "no-store" });
+        response = await fetchApi(settings, input, { ...init, redirect: "error", cache: "no-store" });
       }
       if (!response.ok) {
         await response.body?.cancel();
@@ -675,7 +886,7 @@ export async function streamChatWithSavedModel(
         let started = false;
         let clipped = false;
         const flush = (final = false) => {
-          buffered = redact(buffered, [settings.apiKey]);
+          buffered = redact(buffered, apiSecrets(settings));
           let keep = 0;
           // Retain a possible credential prefix so split stream chunks cannot leak it.
           if (!final && settings.apiKey) {
@@ -710,13 +921,36 @@ export async function streamChatWithSavedModel(
       const reasoning = output("reasoning", "thinking");
       try {
         const onError = (error: unknown) => { console.error("Saved-model stream:", streamError(error)); };
-        const model = provider.chatModel(settings.model);
-        const modelStream = runner ? runner({
-          model, settings, messages, abortSignal, onError,
-          onToolActivity: (activity) => writer.write({ type: "data-tool", id: activity.id, data: activity }),
-        }) : streamText({
-          model, messages, maxOutputTokens: 1024, maxRetries: 0, abortSignal,
+        const baseModel = provider.chatModel(settings.model);
+        const compatibility = providerCompatibilityMiddleware(settings);
+        const model = compatibility ? wrapLanguageModel({ model: baseModel, middleware: compatibility }) : baseModel;
+        const modelMessages: ModelMessage[] = tester ? [{
+          role: "user",
+          content: [
+            { type: "text", text: tester.request.prompt },
+            ...(tester.request.image ? [{
+              type: "file" as const, data: tester.request.image,
+              mediaType: tester.request.image.slice(5, tester.request.image.indexOf(";")),
+            }] : []),
+          ],
+        }] : messages;
+        const generationOptions = {
+          model, messages: modelMessages, maxOutputTokens: tester?.request.maxTokens ?? 1024, maxRetries: 0, abortSignal,
+          ...(tester?.request.systemPrompt ? { instructions: tester.request.systemPrompt } : {}),
+          ...(tester?.request.temperature === undefined ? {} : { temperature: tester.request.temperature }),
           ...(settings.reasoningEffort ? { providerOptions: { savedModel: { reasoningEffort: settings.reasoningEffort } } } : {}),
+        };
+        async function* nonStreamingResult() {
+          const result = await generateText(generationOptions);
+          if (result.reasoningText) yield { type: "reasoning-delta" as const, text: result.reasoningText };
+          yield { type: "text-delta" as const, text: result.text };
+          yield { type: "finish" as const, finishReason: result.finishReason };
+        }
+        const modelStream = runner ? runner({
+          model, settings, messages, abortSignal, deadline, onError,
+          onToolActivity: (activity) => writer.write({ type: "data-tool", id: activity.id, data: activity }),
+        }) : tester?.request.stream === false ? nonStreamingResult() : streamText({
+          ...generationOptions,
           onError: ({ error }) => onError(error),
         }).stream;
         for await (const part of modelStream) {
@@ -724,6 +958,12 @@ export async function streamChatWithSavedModel(
           if (part.type === "abort") throw new ConnectionError(timeout.aborted ? `API request timed out after ${timeoutMs / 1000} seconds.` : "Model request was cancelled.", 499);
           if (runner && part.type === "finish" && part.finishReason === "length") {
             throw new ConnectionError("Research generation reached its output-token limit, which may include thinking tokens. Try a narrower question, or raise the output-token limits in Configuration. No automatic retry was performed.", 502);
+          }
+          if (tester && part.type === "finish" && part.finishReason === "length") {
+            throw new ConnectionError("The model request reached its output-token limit. Increase max_tokens and retry.", 502);
+          }
+          if (tester && part.type === "finish" && part.finishReason !== "stop") {
+            throw new ConnectionError("The model request did not finish normally. Any displayed output is incomplete.", 502);
           }
           if (part.type === "text-delta") reply.push(part.text);
           if (part.type === "reasoning-delta") reasoning.push(part.text);
@@ -733,6 +973,16 @@ export async function streamChatWithSavedModel(
         reasoning.end();
         reply.end();
         if (!reply.text.trim()) throw new ConnectionError("API responded, but returned no non-empty assistant feedback.", 502);
+        if (tester?.request.mode === "json") {
+          let value: unknown;
+          try { value = JSON.parse(reply.text); } catch {
+            throw new ConnectionError("The model did not return valid JSON-schema output.", 502);
+          }
+          const result = connectionProbeSchema.safeParse(value);
+          if (!result.success || !result.data.feedback.trim()) {
+            throw new ConnectionError("The model response did not match the requested strict JSON schema.", 502);
+          }
+        }
         writer.write({
           type: "finish",
           messageMetadata: { model: settings.model, baseUrl: runner ? "" : settings.baseUrl, durationMs: Date.now() - started, completed: true },

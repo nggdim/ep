@@ -76,21 +76,50 @@ afterEach(async () => {
 });
 
 describe("automatic model dropdown loading", () => {
+  it("restores manual discovery without requesting models and saves manual effort and proxy settings", async () => {
+    fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({
+      api: { ...DEFAULT_CONNECTIONS.api, useModelCatalog: false, trustEnv: true, hasApiKey: false },
+      database: { ...DEFAULT_CONNECTIONS.database, hasPassword: false },
+    }) }));
+    await unlock();
+    await edit('input[aria-label="Model"]', "manual-model");
+    await chooseEffort("high");
+    await loadCatalog();
+    expect(catalogRequests).toHaveLength(0);
+    await act(async () => {
+      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    const save = fetchMock.mock.calls.find(([, init]) => init.method === "PUT");
+    expect(JSON.parse(save![1].body).settings).toMatchObject({ model: "manual-model", reasoningEffort: "high", useModelCatalog: false, trustEnv: true });
+  });
+  it("applies API SSL changes to catalog loading and keeps verification distinct from database TLS", async () => {
+    await unlock();
+    const verification = container.querySelector<HTMLInputElement>('[aria-label="Verify API SSL certificate"]')!;
+    expect(verification.checked).toBe(false);
+    expect(container.querySelector('[aria-label="API CA certificate"]')).toBeNull();
+    expect(container.textContent).toContain("server identity is not verified");
+    await act(async () => { verification.click(); });
+    await loadCatalog();
+    expect(catalogRequests.at(-1)?.settings).toMatchObject({ verifySsl: true });
+    expect(container.querySelector('[aria-label="API CA certificate"]')).not.toBeNull();
+    const databaseTls = [...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Require TLS with certificate verification"));
+    expect(databaseTls?.querySelector("input")?.checked).toBe(true);
+  });
   it("shows only catalog-advertised effort levels and resets when model or endpoint changes", async () => {
     await unlock();
     expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     await edit('input[aria-label="Model"]', "alibaba/qwen3-coder");
-    const values = () => [...container.querySelectorAll("select option")].map((option) => option.getAttribute("value"));
+    const values = () => [...container.querySelectorAll('select[aria-label="Thinking effort"] option')].map((option) => option.getAttribute("value"));
     expect(values()).toEqual(["", "none", "low", "high", "max"]);
     await chooseEffort("high");
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("high");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("high");
     await edit('input[aria-label="Model"]', "openai/gpt-4.1-mini");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     await edit('input[aria-label="Model"]', "alibaba/qwen3-coder");
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("");
     await chooseEffort("max");
     await edit('input[type="url"]', "https://custom.example/v1");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
   });
   it("tests and persists the selected effort, restores it on unlock and allows clearing an unverified value", async () => {
     const saved: PublicConnections = {
@@ -99,7 +128,7 @@ describe("automatic model dropdown loading", () => {
     };
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => saved }));
     await unlock();
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("high");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("high");
     await chooseEffort("max");
     fetchMock.mockImplementationOnce(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/config/test");
@@ -116,16 +145,16 @@ describe("automatic model dropdown loading", () => {
     await act(async () => {
       container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("max");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("max");
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ models: catalog, reasoningEfforts: {} }) }));
     await act(async () => {
       [...container.querySelectorAll("button")].find((button) => button.textContent === "Refresh models")!.click();
     });
     await loadCatalog();
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("max");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("max");
     expect(container.querySelector<HTMLOptionElement>('option[value="max"]')!.disabled).toBe(true);
     await chooseEffort("");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
   });
   it("indicates the Gateway environment override and restores key entry for custom endpoints", async () => {
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({
@@ -204,7 +233,7 @@ describe("automatic model dropdown loading", () => {
   it("uses one editable combobox for catalog selection, search and custom IDs", async () => {
     await unlock();
     expect(container.querySelectorAll("input[list]")).toHaveLength(1);
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     expect(container.querySelector('input[type="search"]')).toBeNull();
     const model = container.querySelector<HTMLInputElement>('input[aria-label="Model"]')!;
     expect(model.list).toBe(container.querySelector("datalist"));
@@ -244,11 +273,33 @@ describe("automatic model dropdown loading", () => {
     expect(JSON.parse(save![1].body).settings.outputTokens).toEqual({ planning: 8000 });
   });
 
+  it("groups model settings into tabs that keep their state and reveal an invalid field", async () => {
+    await unlock();
+    const panel = (id: string) => container.querySelector<HTMLElement>(`[role="tabpanel"][data-tab="${id}"]`)!;
+    const tab = (label: string) => [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((item) => item.textContent === label)!;
+    expect(panel("endpoint").hidden).toBe(false);
+    expect(panel("model").hidden).toBe(true);
+    await act(async () => { tab("Model & limits").click(); });
+    expect(panel("endpoint").hidden).toBe(true);
+    await edit('input[aria-label="Model"]', "");
+    await act(async () => { tab("Chat").click(); });
+    expect(container.querySelector<HTMLFormElement>("form")!.hidden).toBe(true);
+    await act(async () => { tab("Endpoint").click(); });
+    const form = container.querySelector<HTMLFormElement>("form")!;
+    const report = vi.spyOn(form, "reportValidity").mockReturnValue(false);
+    await act(async () => { tab("Compatibility").click(); });
+    await act(async () => {
+      container.querySelector('input[aria-label="Model"]')!.dispatchEvent(new Event("invalid", { cancelable: true }));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(panel("model").hidden).toBe(false);
+    expect(report).toHaveBeenCalled();
+  });
   it("keeps chat on saved settings while editing and resets it after an API save", async () => {
     await unlock();
     const savedModel = DEFAULT_CONNECTIONS.api.model;
     await edit('input[aria-label="Model"]', "unsaved/model");
-    const chatSection = () => [...container.querySelectorAll("section")].find((section) => section.textContent?.includes("Chat with your saved model"))!;
+    const chatSection = () => [...container.querySelectorAll("section")].findLast((section) => section.textContent?.includes("Chat with your saved model"))!;
     expect(chatSection().textContent).toContain(savedModel);
     expect(chatSection().textContent).not.toContain("unsaved/model");
     fetchMock.mockImplementationOnce(async (url: string, init: RequestInit) => {
